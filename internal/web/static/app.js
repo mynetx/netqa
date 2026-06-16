@@ -90,7 +90,7 @@ function applyStatus(s) {
   $("m_vpn").textContent = s.vpn ? "on" : "off";
   // SSID is often hidden from background processes on macOS 14.4+ (needs Location
   // permission). Fall back to showing the connected interface instead of blank.
-  $("m_ssid").textContent = s.ssid || (s.gateway_up ? (s.iface || "link") : "—");
+  $("m_ssid").textContent = s.ssid || s.iface || "—";
   $("m_gw").textContent = (s.gateway_up ? "up " : "down ") + (s.gateway_ip || "");
   const o = $("m_outage");
   if (s.outage_open) {
@@ -173,7 +173,8 @@ function chart(canvasId, points, getY, opts = {}) {
     ctx.fillStyle = "rgba(248,81,73,0.18)";
     opts.outages.forEach((o) => {
       const s = Math.max(+new Date(o.Start), t0);
-      const e = o.End && +new Date(o.End) ? Math.min(+new Date(o.End), t1) : t1;
+      const endD = outageEnd(o);
+      const e = endD ? Math.min(+endD, t1) : t1; // ongoing -> extend to now/range end
       const xs = padL + ((s - t0) / (t1 - t0)) * plotW;
       const xe = padL + ((e - t0) / (t1 - t0)) * plotW;
       ctx.fillRect(xs, padT, Math.max(1, xe - xs), plotH);
@@ -244,11 +245,19 @@ function updateThroughputStat(tps, tgt) {
   }
 }
 
+// outageEnd returns the end Date, or null when the outage is still ongoing
+// (the Go zero time marshals as year 0001, which must not be treated as a date).
+function outageEnd(o) {
+  if (!o.End) return null;
+  const d = new Date(o.End);
+  return d.getUTCFullYear() < 2000 ? null : d;
+}
+
 function renderOutages() {
   const outs = (state.history && state.history.outages) ? state.history.outages : [];
   $("outrows").innerHTML = outs.length ? outs.slice().reverse().map((o) => {
-    const start = new Date(o.Start), end = o.End && +new Date(o.End) ? new Date(o.End) : null;
-    const dur = end ? human((end - start) / 1000) : "ongoing";
+    const start = new Date(o.Start), end = outageEnd(o);
+    const dur = end ? human((end - start) / 1000) : human((Date.now() - start) / 1000) + " (ongoing)";
     return `<tr><td>${start.toLocaleString()}</td><td>${end ? end.toLocaleString() : "—"}</td>
       <td>${dur}</td><td><span class="tag ${o.Class}">${o.Class}</span></td></tr>`;
   }).join("") : `<tr><td colspan="4" class="muted">No ISP outages in range. 🎉 (or your line behaved)</td></tr>`;
@@ -266,7 +275,10 @@ function exportCSV() {
   const rows = [["bucket_time", "avg_rtt_ms", "loss_pct", "samples"]];
   (state.history.points || []).forEach((p) => rows.push([p.t, p.avg_rtt_ms, p.loss_pct, p.samples]));
   rows.push([]); rows.push(["outage_start", "outage_end", "class"]);
-  (state.history.outages || []).forEach((o) => rows.push([o.Start, o.End, o.Class]));
+  (state.history.outages || []).forEach((o) => {
+    const end = outageEnd(o);
+    rows.push([o.Start, end ? end.toISOString() : "ongoing", o.Class]);
+  });
   const csv = rows.map((r) => r.join(",")).join("\n");
   const prov = selectedProviderTargets();
   const name = "netqa-" + (prov ? prov.Name.replace(/\W+/g, "_") : "all") + "-" + new Date().toISOString().slice(0, 10) + ".csv";

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mynetx/netqa/internal/config"
@@ -51,6 +52,10 @@ type Daemon struct {
 	// Optional hooks; nil-safe. Called outside the status lock.
 	OnOutageOpen  func(model.Outage)
 	OnOutageClose func(model.Outage)
+
+	// measuring is set while a throughput test saturates the link, so the prober
+	// does not misread the deliberate saturation as an ISP outage.
+	measuring atomic.Bool
 
 	mu        sync.RWMutex
 	status    Status
@@ -160,7 +165,10 @@ func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, fl
 			return 0, 0, errLinkBusy
 		}
 	}
+	// Suppress outage detection while the test saturates the link.
+	d.measuring.Store(true)
 	res, err := d.measurer.Measure(ctx)
+	d.measuring.Store(false)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -187,6 +195,11 @@ func (d *Daemon) reachable(ctx context.Context, host string) (bool, time.Duratio
 }
 
 func (d *Daemon) tick(ctx context.Context) {
+	// A throughput test deliberately saturates the link; probing during it would
+	// register false packet loss and a false ISP outage. Skip the tick.
+	if d.measuring.Load() {
+		return
+	}
 	tickCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	now := time.Now()
