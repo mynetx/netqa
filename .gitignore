@@ -1,0 +1,13 @@
+# build artifacts
+/netqa
+/dist/
+*.exe
+
+# local data / runtime
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# macOS
+.DS_Store

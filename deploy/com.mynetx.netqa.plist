@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  netqa LaunchAgent. Install:
+    1. build:    go build -o /usr/local/bin/netqa ./cmd/netqa
+    2. copy:     cp deploy/com.mynetx.netqa.plist ~/Library/LaunchAgents/
+    3. edit the path below if you installed the binary elsewhere
+    4. load:     launchctl load -w ~/Library/LaunchAgents/com.mynetx.netqa.plist
+    5. dashboard: http://127.0.0.1:8799
+  Stop/unload:   launchctl unload -w ~/Library/LaunchAgents/com.mynetx.netqa.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mynetx.netqa</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/netqa</string>
+    <string>serve</string>
+  </array>
+
+  <!-- Restart if it ever exits; start at login. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Throttle restart loop if it crashes immediately. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/netqa.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/netqa.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

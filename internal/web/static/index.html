@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>netqa — connectivity quality</title>
+<style>
+  :root {
+    --bg:#0b0e13; --bg2:#0e1219; --panel:#141a23; --panel2:#171e29;
+    --line:#222b38; --line2:#2c3848; --fg:#e8eef6; --mut:#8a97a9; --mut2:#6b7686;
+    --good:#3fb950; --bad:#f85149; --warn:#e3a008; --accent:#4493f8;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+    --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.18);
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; color:var(--fg);
+    background:radial-gradient(1200px 600px at 80% -10%, #131a26 0%, var(--bg) 60%);
+    font:14px/1.45 -apple-system,system-ui,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased;
+  }
+
+  /* header */
+  header {
+    position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:14px;
+    padding:11px 20px; background:rgba(14,18,25,.82); backdrop-filter:saturate(160%) blur(10px);
+    border-bottom:1px solid var(--line); flex-wrap:wrap;
+  }
+  .brand { font-weight:700; font-size:15px; letter-spacing:.3px; }
+  .brand .q { color:var(--accent); }
+  .pill { display:inline-flex; align-items:center; gap:7px; padding:4px 11px; border-radius:999px;
+    background:var(--panel); border:1px solid var(--line); font-weight:600; font-size:12.5px; }
+  .dot { width:9px; height:9px; border-radius:50%; box-shadow:0 0 0 3px rgba(255,255,255,.04); }
+  .dot.up{background:var(--good);} .dot.down{background:var(--bad);} .dot.warn{background:var(--warn);}
+  .pill.up{color:#9fe6ab;border-color:#1f3d27;background:#0f1e14;}
+  .pill.down{color:#ff9a93;border-color:#3d1f1f;background:#1e0f0f;}
+  .pill.warn{color:#ffd76b;border-color:#3d3413;background:#1e1a0c;}
+  #livenet { color:var(--mut); font-size:12.5px; }
+  .spacer { flex:1; }
+  .ctl { display:inline-flex; align-items:center; gap:7px; color:var(--mut2); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  select,button,input { background:var(--bg2); color:var(--fg); border:1px solid var(--line2);
+    border-radius:8px; padding:7px 10px; font:inherit; max-width:100%; transition:border-color .15s, background .15s; }
+  select:hover,input:hover { border-color:#3a4759; }
+  button { cursor:pointer; font-weight:600; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary:hover { filter:brightness(1.08); }
+  label.chk { display:inline-flex; align-items:center; gap:7px; color:var(--mut2); cursor:pointer;
+    font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  label.chk input { width:15px; height:15px; accent-color:var(--accent); }
+
+  /* layout */
+  main { padding:20px; max-width:1500px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
+  .stats { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+  .card { background:linear-gradient(180deg,var(--panel2),var(--panel)); border:1px solid var(--line);
+    border-radius:14px; padding:16px 18px; box-shadow:var(--shadow); }
+  .stat .lbl { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--mut2); margin-bottom:9px; }
+  .stat .num { font:600 27px/1 var(--mono); letter-spacing:-.5px; }
+  .stat .num.sm { font-size:21px; }
+  .stat .sub { margin-top:7px; font-size:12px; color:var(--mut); }
+  .stat .sub b { color:var(--fg); font-weight:600; font-family:var(--mono); }
+  .card.clickable { cursor:pointer; transition:border-color .15s, transform .05s; }
+  .card.clickable:hover { border-color:var(--accent); }
+  .card.clickable:active { transform:translateY(1px); }
+  .hint { float:right; color:var(--accent); font-size:10px; letter-spacing:.04em; opacity:.7; }
+  .card.clickable:hover .hint { opacity:1; }
+
+  /* throughput bar */
+  .bar { height:7px; border-radius:999px; background:#0a0d12; border:1px solid var(--line); margin-top:10px; overflow:hidden; }
+  .bar > i { display:block; height:100%; border-radius:999px; background:var(--good); width:0; transition:width .4s; }
+
+  /* panels */
+  .panel { background:linear-gradient(180deg,var(--panel2),var(--panel)); border:1px solid var(--line);
+    border-radius:14px; padding:16px 18px; box-shadow:var(--shadow); }
+  .panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--mut2);
+    margin:0 0 14px; font-weight:700; }
+  h2.collapsible { cursor:pointer; user-select:none; margin:0; display:flex; align-items:center; gap:8px; }
+  h2.collapsible:hover { color:var(--fg); }
+  #provchevron { display:inline-block; transition:transform .15s; font-size:13px; }
+  #provpanel.open #provchevron { transform:rotate(90deg); }
+  #provpanel.open h2 { margin-bottom:14px; }
+  .onboard { background:#0f1b2c; border:1px solid #1d3450; color:#cfe0f5; border-radius:10px;
+    padding:12px 14px; margin-bottom:14px; font-size:13px; line-height:1.5; }
+  .onboard b { color:#fff; }
+  canvas { width:100%; height:150px; display:block; }
+
+  /* provider editor */
+  .form { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .form > * { min-width:0; }
+  label.fld { display:flex; flex-direction:column; gap:5px; font-size:11px; text-transform:uppercase;
+    letter-spacing:.05em; color:var(--mut2); }
+  label.fld input { width:100%; text-transform:none; letter-spacing:normal; color:var(--fg); }
+  .form-actions { display:flex; align-items:center; gap:12px; margin-top:14px; }
+  .form-actions .muted { font-size:12.5px; }
+
+  /* tables */
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); }
+  thead th { color:var(--mut2); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+  tbody tr:hover { background:rgba(255,255,255,.02); }
+  tbody tr:last-child td { border-bottom:none; }
+  td.mono, .mono { font-family:var(--mono); }
+  .tag { padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .tag.isp{background:#3a1d1d;color:#ff9a93;} .tag.upstream{background:#3a2a14;color:#ffcd6b;}
+  .tag.local{background:#1f2733;color:#9fb0c4;}
+  .muted{color:var(--mut);} .right{text-align:right;}
+  .grow{ flex:1; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">net<span class="q">qa</span></span>
+  <span class="pill warn" id="livepill"><span id="livedot" class="dot warn"></span><span id="livetext">connecting…</span></span>
+  <span id="livenet"></span>
+  <span class="spacer"></span>
+  <span class="ctl">provider <select id="provider"></select></span>
+  <label class="chk"><input type="checkbox" id="presmode"> presentation</label>
+  <span class="ctl">range
+    <select id="range">
+      <option value="6">6h</option>
+      <option value="24" selected>24h</option>
+      <option value="168">7d</option>
+      <option value="720">30d</option>
+    </select>
+  </span>
+  <button id="export">Export CSV</button>
+</header>
+
+<main id="main">
+  <!-- hero stat row -->
+  <section class="stats">
+    <div class="card stat">
+      <div class="lbl">Status</div>
+      <div class="num" id="m_online">—</div>
+      <div class="sub" id="m_outage">—</div>
+    </div>
+    <div class="card stat">
+      <div class="lbl">Latency</div>
+      <div class="num" id="m_rtt">—</div>
+      <div class="sub">jitter <b id="m_jit">—</b></div>
+    </div>
+    <div class="card stat">
+      <div class="lbl">Packet loss</div>
+      <div class="num" id="m_loss">—</div>
+      <div class="sub">rolling window</div>
+    </div>
+    <div class="card stat clickable" id="tpcard" title="Jetzt Speedtest erzwingen">
+      <div class="lbl">Throughput ↓ vs target <span class="hint">⟳ test</span></div>
+      <div class="num sm" id="m_tp">—</div>
+      <div class="bar"><i id="m_tpbar"></i></div>
+    </div>
+    <div class="card stat">
+      <div class="lbl">Connection</div>
+      <div class="num sm" id="m_ssid">—</div>
+      <div class="sub">VPN <b id="m_vpn">—</b> · GW <b id="m_gw">—</b></div>
+    </div>
+  </section>
+
+  <!-- provider editor (collapsed by default; auto-opens on first run) -->
+  <section class="panel" id="provpanel">
+    <h2 class="collapsible" id="provtoggle"><span id="provchevron">▸</span> Provider &amp; target</h2>
+    <div id="provbody" hidden>
+      <div id="onboard" class="onboard" hidden>
+        <b>Welcome to netqa.</b> Add your internet provider and its advertised speed to
+        start collecting evidence. You can edit the target later (e.g. 40 → 20 Mbit).
+      </div>
+      <div class="form">
+        <label class="fld">Name <input id="p_name" placeholder="My ISP"></label>
+        <label class="fld">Notes <input id="p_notes" placeholder="e.g. 40 now, 20 next month"></label>
+        <label class="fld">Down Mbit <input id="p_down" type="number" step="0.1" placeholder="40"></label>
+        <label class="fld">Up Mbit <input id="p_up" type="number" step="0.1" placeholder="40"></label>
+      </div>
+      <div class="form-actions">
+        <button class="primary" id="p_save">Save provider</button>
+        <span class="muted">Editing the target moves the dashed line on the throughput chart.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel"><h2>Latency (ms) &amp; outages</h2><canvas id="c_rtt"></canvas></section>
+  <section class="panel"><h2>Packet loss (%)</h2><canvas id="c_loss"></canvas></section>
+  <section class="panel"><h2>Throughput (Mbit) vs target</h2><canvas id="c_tp"></canvas></section>
+
+  <section class="panel">
+    <h2>Outages — ISP / upstream only (local &amp; sleep excluded)</h2>
+    <table><thead><tr><th>Start</th><th>End</th><th>Duration</th><th>Class</th></tr></thead>
+      <tbody id="outrows"></tbody></table>
+  </section>
+
+  <section class="panel" id="netpanel">
+    <h2>Networks → provider</h2>
+    <table><thead><tr><th>SSID</th><th>Gateway MAC</th><th>ISP / ASN</th><th>Label</th><th>Provider</th><th></th></tr></thead>
+      <tbody id="netrows"></tbody></table>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
