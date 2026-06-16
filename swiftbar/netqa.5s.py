@@ -52,14 +52,16 @@ def main():
     nid = st.get("network_id") or 0
 
     # --- menu bar title ---
+    # When everything is fine, keep it to just the green dot — no numbers.
+    # Surface detail only when there is a problem worth glancing at.
     if outage:
         title = f"🔴 {oclass.upper()}"
     elif not online:
         title = "🟡 local"
+    elif loss >= 2:
+        title = f"🟢 {fmt(loss,0)}%⬇"  # online but losing packets
     else:
-        title = f"🟢 {fmt(rtt,0)}ms"
-        if loss >= 1:
-            title += f" · {fmt(loss,0)}%⬇"
+        title = "🟢"
     print(title)
 
     # --- dropdown ---
