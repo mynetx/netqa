@@ -86,10 +86,12 @@ cp swiftbar/netqa.5s.py ~/.swiftbar/          # or your SwiftBar plugin folder
 chmod +x ~/.swiftbar/netqa.5s.py
 ```
 
-The title shows `🟢 86ms` (online + latency), `🔴 ISP` (confirmed outage) or
-`🟡 local` (self-inflicted gap). The dropdown lists latency/jitter/loss,
-throughput vs target, VPN/link/gateway, a **Run speed test now** action, and a
-link to the dashboard. It only reads the local daemon — no extra setup.
+The title is a single coloured dot: a plain green `●` when online and healthy
+(no numbers), `● ISP` in red on a confirmed outage, `● local` in yellow for a
+self-inflicted gap, or `● 5%⬇` in yellow when online but losing packets. The
+dropdown lists latency/jitter/loss, throughput vs target, VPN/link/gateway, a
+**Run speed test now** action, and a link to the dashboard. It only reads the
+local daemon — no extra setup.
 
 ## Config (`config.yaml`)
 
