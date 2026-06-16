@@ -52,17 +52,18 @@ def main():
     nid = st.get("network_id") or 0
 
     # --- menu bar title ---
-    # When everything is fine, keep it to just the green dot — no numbers.
-    # Surface detail only when there is a problem worth glancing at.
+    # Solid single-colour dot (● glyph + color=), not an emoji. When everything is
+    # fine it is just the green dot; problems add a short label.
+    GREEN, RED, YELLOW = "#3fb950", "#f85149", "#e3a008"
     if outage:
-        title = f"🔴 {oclass.upper()}"
+        text, col = f"● {oclass.upper()}", RED
     elif not online:
-        title = "🟡 local"
+        text, col = "● local", YELLOW
     elif loss >= 2:
-        title = f"🟢 {fmt(loss,0)}%⬇"  # online but losing packets
+        text, col = f"● {fmt(loss,0)}%⬇", YELLOW  # online but losing packets
     else:
-        title = "🟢"
-    print(title)
+        text, col = "●", GREEN
+    print(f"{text} | color={col} size=14")
 
     # --- dropdown ---
     print("---")
