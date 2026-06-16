@@ -76,6 +76,21 @@ and its advertised speed:
 4. When your plan changes (e.g. 40 → 20 Mbit), edit the target — the dashed chart
    line moves; past records keep their original measured values.
 
+## Menu bar (SwiftBar)
+
+A tiny [SwiftBar](https://swiftbar.app) plugin shows live status in the macOS menu
+bar — a drop-in replacement for a "is the network up?" menu bar app:
+
+```sh
+cp swiftbar/netqa.5s.py ~/.swiftbar/          # or your SwiftBar plugin folder
+chmod +x ~/.swiftbar/netqa.5s.py
+```
+
+The title shows `🟢 86ms` (online + latency), `🔴 ISP` (confirmed outage) or
+`🟡 local` (self-inflicted gap). The dropdown lists latency/jitter/loss,
+throughput vs target, VPN/link/gateway, a **Run speed test now** action, and a
+link to the dashboard. It only reads the local daemon — no extra setup.
+
 ## Config (`config.yaml`)
 
 | key | default | meaning |
