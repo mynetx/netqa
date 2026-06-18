@@ -19,6 +19,7 @@ import (
 	"github.com/mynetx/netqa/internal/prober"
 	"github.com/mynetx/netqa/internal/store"
 	"github.com/mynetx/netqa/internal/throughput"
+	"github.com/mynetx/netqa/internal/trace"
 )
 
 // Status is the live snapshot the dashboard renders.
@@ -275,6 +276,7 @@ func (d *Daemon) manageOutage(nid int64, now time.Time, vpn, isOut bool, class m
 		o := model.Outage{NetworkID: nid, Start: now, Class: class, VPN: vpn}
 		if id, err := d.store.OpenOutage(o); err == nil {
 			o.ID = id
+			d.captureTraceroute(nid, id)
 			if d.OnOutageOpen != nil {
 				d.OnOutageOpen(o)
 			}
@@ -287,6 +289,26 @@ func (d *Daemon) manageOutage(nid int64, now time.Time, vpn, isOut bool, class m
 			}
 		}
 	}
+}
+
+// captureTraceroute runs a traceroute in the background when an ISP outage opens
+// and stores it against the outage, so the evidence shows where the path breaks.
+// It runs detached (traceroute takes seconds) and is best-effort: a failure or
+// empty result is silently dropped rather than blocking outage handling.
+func (d *Daemon) captureTraceroute(nid, outageID int64) {
+	if len(d.cfg.Targets) == 0 {
+		return
+	}
+	target := d.cfg.Targets[0]
+	go func() {
+		raw, _, err := trace.Run(context.Background(), target)
+		if raw == "" || err != nil {
+			return
+		}
+		_ = d.store.InsertTraceroute(model.Traceroute{
+			OutageID: outageID, NetworkID: nid, TS: time.Now(), Target: target, Raw: raw,
+		})
+	}()
 }
 
 func msOf(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
