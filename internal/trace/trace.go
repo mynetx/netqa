@@ -21,9 +21,14 @@ import (
 func Run(ctx context.Context, target string) (string, []model.TracerouteHop, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// -I: ICMP probes. QCell's network silently drops the default UDP probes
+	// (every hop past the router shows "*"), but passes ICMP, which reveals the
+	// full path including the QCell-domestic hops and the submarine-cable jump to
+	// Europe — so the evidence shows where a break actually is. ICMP traceroute is
+	// unprivileged on macOS, so no sudo is needed.
 	// -n: numeric (no DNS, faster). -w 1: 1s wait per probe. -q 1: one probe per
 	// hop. -m 20: cap hops so a long dead tail doesn't stall the capture.
-	out, err := exec.CommandContext(cctx, "traceroute", "-n", "-w", "1", "-q", "1", "-m", "20", target).CombinedOutput()
+	out, err := exec.CommandContext(cctx, "traceroute", "-I", "-n", "-w", "1", "-q", "1", "-m", "20", target).CombinedOutput()
 	raw := string(out)
 	if raw == "" && err != nil {
 		return "", nil, err
