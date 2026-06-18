@@ -188,11 +188,12 @@ func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
 
 // historyResponse bundles the chart data for one network over a window.
 type historyResponse struct {
-	From       time.Time          `json:"from"`
-	To         time.Time          `json:"to"`
-	Points     []Point            `json:"points"`
-	Outages    []model.Outage     `json:"outages"`
-	Throughput []model.Throughput `json:"throughput"`
+	From        time.Time           `json:"from"`
+	To          time.Time           `json:"to"`
+	Points      []Point             `json:"points"`
+	Outages     []model.Outage      `json:"outages"`
+	Throughput  []model.Throughput  `json:"throughput"`
+	Traceroutes []model.Traceroute  `json:"traceroutes"`
 }
 
 // handleHistory: GET /api/history?network=<id>&hours=<n>&buckets=<n>
@@ -211,12 +212,14 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	outs, _ := s.store.OutagesBetween(nid, from, to)
 	tps, _ := s.store.ThroughputBetween(nid, from, to)
+	trs, _ := s.store.TraceroutesBetween(nid, from, to)
 
 	writeJSON(w, historyResponse{
 		From: from, To: to,
-		Points:     bucketSamples(samples, from, to, buckets),
-		Outages:    outs,
-		Throughput: tps,
+		Points:      bucketSamples(samples, from, to, buckets),
+		Outages:     outs,
+		Throughput:  tps,
+		Traceroutes: trs,
 	})
 }
 

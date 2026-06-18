@@ -458,3 +458,31 @@ func (s *Store) InsertTraceroute(t model.Traceroute) error {
 		outageID, t.NetworkID, toUnix(t.TS), t.Target, t.Raw)
 	return err
 }
+
+// TraceroutesBetween returns the traceroutes captured for a network in [from, to]
+// ordered by time. Used by the dashboard to show the path captured at each outage.
+func (s *Store) TraceroutesBetween(networkID int64, from, to time.Time) ([]model.Traceroute, error) {
+	rows, err := s.db.Query(
+		`SELECT id, outage_id, network_id, ts, target, raw FROM traceroutes
+		 WHERE network_id=? AND ts BETWEEN ? AND ? ORDER BY ts`,
+		networkID, toUnix(from), toUnix(to))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Traceroute
+	for rows.Next() {
+		var t model.Traceroute
+		var oid sql.NullInt64
+		var ts int64
+		if err := rows.Scan(&t.ID, &oid, &t.NetworkID, &ts, &t.Target, &t.Raw); err != nil {
+			return nil, err
+		}
+		if oid.Valid {
+			t.OutageID = oid.Int64
+		}
+		t.TS = fromUnix(ts)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}

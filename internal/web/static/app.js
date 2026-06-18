@@ -265,14 +265,39 @@ function outageEnd(o) {
   return d.getUTCFullYear() < 2000 ? null : d;
 }
 
+// esc makes traceroute text safe to inject into the path detail row.
+function esc(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
 function renderOutages() {
   const outs = (state.history && state.history.outages) ? state.history.outages : [];
+  const trs = (state.history && state.history.traceroutes) ? state.history.traceroutes : [];
+  const byOutage = {};
+  trs.forEach((t) => { if (t.OutageID) (byOutage[t.OutageID] = byOutage[t.OutageID] || []).push(t); });
+
   $("outrows").innerHTML = outs.length ? outs.slice().reverse().map((o) => {
     const start = new Date(o.Start), end = outageEnd(o);
     const dur = end ? human((end - start) / 1000) : human((Date.now() - start) / 1000) + " (ongoing)";
-    return `<tr><td>${start.toLocaleString()}</td><td>${end ? end.toLocaleString() : "—"}</td>
-      <td>${dur}</td><td><span class="tag ${o.Class}">${o.Class}</span></td></tr>`;
-  }).join("") : `<tr><td colspan="4" class="muted">No ISP outages in range. 🎉 (or your line behaved)</td></tr>`;
+    const paths = byOutage[o.ID] || [];
+    const pathCell = paths.length
+      ? `<button class="pathtoggle" data-outage="${o.ID}">path ▾</button>`
+      : `<span class="muted">—</span>`;
+    const detail = paths.length
+      ? `<tr class="pathrow" id="path_${o.ID}" hidden><td colspan="5"><pre class="trace">` +
+        paths.map((t) => `→ ${esc(t.Target)} @ ${new Date(t.TS).toLocaleTimeString()}\n${esc(t.Raw)}`).join("\n\n") +
+        `</pre></td></tr>`
+      : "";
+    return `<tr><td>${start.toLocaleString()}</td><td>${end ? end.toLocaleString() : "—"}</td>` +
+      `<td>${dur}</td><td><span class="tag ${o.Class}">${o.Class}</span></td><td>${pathCell}</td></tr>${detail}`;
+  }).join("") : `<tr><td colspan="5" class="muted">No ISP outages in range. 🎉 (or your line behaved)</td></tr>`;
+
+  document.querySelectorAll(".pathtoggle").forEach((b) => {
+    b.onclick = () => {
+      const row = $("path_" + b.dataset.outage);
+      if (row) row.hidden = !row.hidden;
+    };
+  });
 }
 
 function human(sec) {

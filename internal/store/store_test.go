@@ -183,6 +183,39 @@ func TestOutageOpenAndClose(t *testing.T) {
 	}
 }
 
+func TestTraceroutesBetween(t *testing.T) {
+	s := openTemp(t)
+	nid, _ := s.UpsertNetwork(model.Network{SSID: "Home", GatewayMAC: "aa:aa:aa:aa:aa:aa"})
+	start := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	oid, _ := s.OpenOutage(model.Outage{NetworkID: nid, Start: start, Class: model.OutageISP})
+
+	ts := start.Add(time.Second)
+	raw := " 1  192.168.178.1  2.5 ms\n 2  146.196.246.1  4.0 ms"
+	if err := s.InsertTraceroute(model.Traceroute{
+		OutageID: oid, NetworkID: nid, TS: ts, Target: "1.1.1.1", Raw: raw,
+	}); err != nil {
+		t.Fatalf("InsertTraceroute: %v", err)
+	}
+
+	trs, err := s.TraceroutesBetween(nid, start.Add(-time.Hour), start.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("TraceroutesBetween: %v", err)
+	}
+	if len(trs) != 1 {
+		t.Fatalf("got %d traceroutes want 1", len(trs))
+	}
+	got := trs[0]
+	if got.OutageID != oid || got.Target != "1.1.1.1" || got.Raw != raw || !got.TS.Equal(ts) {
+		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+
+	// Outside the window -> nothing.
+	none, _ := s.TraceroutesBetween(nid, start.Add(time.Hour), start.Add(2*time.Hour))
+	if len(none) != 0 {
+		t.Fatalf("expected no traceroutes outside window, got %d", len(none))
+	}
+}
+
 func TestInsertThroughputDNSPower(t *testing.T) {
 	s := openTemp(t)
 	nid, _ := s.UpsertNetwork(model.Network{SSID: "Home", GatewayMAC: "aa:aa:aa:aa:aa:aa"})
