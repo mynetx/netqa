@@ -139,6 +139,8 @@ async function saveNetwork(tr) {
 }
 
 // ---- canvas charts (minimal line/area, no libs) ----
+const charts = {}; // canvasId -> geometry + redraw closure, populated by chart()
+
 function chart(canvasId, points, getY, opts = {}) {
   const cv = $(canvasId);
   const dpr = window.devicePixelRatio || 1;
@@ -168,6 +170,7 @@ function chart(canvasId, points, getY, opts = {}) {
   }
 
   // outage shading
+  const bands = [];
   if (opts.outages && state.history) {
     const t0 = +new Date(state.history.from), t1 = +new Date(state.history.to);
     ctx.fillStyle = "rgba(248,81,73,0.18)";
@@ -177,7 +180,9 @@ function chart(canvasId, points, getY, opts = {}) {
       const e = endD ? Math.min(+endD, t1) : t1; // ongoing -> extend to now/range end
       const xs = padL + ((s - t0) / (t1 - t0)) * plotW;
       const xe = padL + ((e - t0) / (t1 - t0)) * plotW;
-      ctx.fillRect(xs, padT, Math.max(1, xe - xs), plotH);
+      const bw = Math.max(1, xe - xs);
+      ctx.fillRect(xs, padT, bw, plotH);
+      bands.push({ o, xs, xe: xs + bw });
     });
   }
 
@@ -212,6 +217,13 @@ function chart(canvasId, points, getY, opts = {}) {
     ctx.fillStyle = opts.color || "#4493f8";
     points.forEach((p, i) => { const v = getY(p); if (v != null) ctx.fillRect(x(i) - 2, y(v), 4, padT + plotH - y(v)); });
   }
+
+  // stash geometry + a redraw closure so hover can map cursor->data and repaint
+  charts[canvasId] = {
+    ctx, points, getY, x, y, n, color: opts.color || "#4493f8",
+    padL, padT, plotW, plotH, bands,
+    redraw: () => chart(canvasId, points, getY, opts),
+  };
 }
 
 function drawAll() {
@@ -267,6 +279,93 @@ function human(sec) {
   if (sec < 60) return Math.round(sec) + "s";
   if (sec < 3600) return Math.floor(sec / 60) + "m " + Math.round(sec % 60) + "s";
   return Math.floor(sec / 3600) + "h " + Math.floor((sec % 3600) / 60) + "m";
+}
+
+// ---- chart hover: crosshair + dot + floating tooltip ----
+// fmtTs renders a point time as "Mon 18 June 21:00" (24h, viewer timezone).
+function fmtTs(t) {
+  const parts = new Intl.DateTimeFormat(undefined, {
+    weekday: "short", day: "numeric", month: "long",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date(t));
+  const g = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+  return `${g("weekday")} ${g("day")} ${g("month")} ${g("hour")}:${g("minute")}`;
+}
+
+function showTip(html, clientX, clientY) {
+  const tip = $("tip");
+  tip.innerHTML = html;
+  tip.hidden = false;
+  const m = 14, r = tip.getBoundingClientRect();
+  let left = clientX + m, top = clientY + m;
+  if (left + r.width > window.innerWidth) left = clientX - m - r.width;
+  if (top + r.height > window.innerHeight) top = clientY - m - r.height;
+  tip.style.left = Math.max(4, left) + "px";
+  tip.style.top = Math.max(4, top) + "px";
+}
+function hideTip() { $("tip").hidden = true; }
+
+// attachHover wires mousemove/leave on a canvas. kind drives the value readout:
+// "rtt" (ms, with outage hit-test), "loss" (%), or "tp" (Mbit).
+function attachHover(canvasId, kind) {
+  const cv = $(canvasId);
+  if (!cv || cv.dataset.hover) return; // bind once
+  cv.dataset.hover = "1";
+
+  cv.addEventListener("mousemove", (ev) => {
+    const c = charts[canvasId];
+    if (!c || !c.n) { hideTip(); return; }
+    const rect = cv.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    if (mx < c.padL || mx > c.padL + c.plotW) { hideTip(); c.redraw(); return; }
+
+    // latency: outage band takes priority over the point readout
+    if (kind === "rtt") {
+      const band = (c.bands || []).find((b) => mx >= b.xs && mx <= b.xe);
+      if (band) {
+        const o = band.o, start = new Date(o.Start), endD = outageEnd(o);
+        const len = endD ? human((endD - start) / 1000)
+                         : human((Date.now() - start) / 1000) + " (ongoing)";
+        c.redraw();
+        c.ctx.fillStyle = "rgba(248,81,73,0.32)";
+        c.ctx.fillRect(band.xs, c.padT, Math.max(1, band.xe - band.xs), c.plotH);
+        showTip(
+          `<b class="tag ${o.Class}">${o.Class}</b> outage<br>` +
+          `${fmtTs(start)} → ${endD ? fmtTs(endD) : "now"}<br>` +
+          `<b>${len}</b>`,
+          ev.clientX, ev.clientY);
+        return;
+      }
+    }
+
+    const i = Math.round(((mx - c.padL) / c.plotW) * (c.n - 1));
+    const p = c.points[i];
+    if (!p) { hideTip(); c.redraw(); return; }
+    const v = c.getY(p);
+    const px = c.x(i);
+
+    c.redraw();
+    c.ctx.strokeStyle = "rgba(232,238,246,0.35)"; c.ctx.lineWidth = 1;
+    c.ctx.beginPath(); c.ctx.moveTo(px, c.padT); c.ctx.lineTo(px, c.padT + c.plotH); c.ctx.stroke();
+    if (v != null) {
+      c.ctx.fillStyle = c.color;
+      c.ctx.beginPath(); c.ctx.arc(px, c.y(v), 3.5, 0, Math.PI * 2); c.ctx.fill();
+    }
+
+    const t = kind === "tp" ? p.TS : p.t;
+    let val;
+    if (v == null) val = "no data";
+    else if (kind === "rtt") val = fmt(v) + " ms";
+    else if (kind === "loss") val = fmt(v) + " % loss";
+    else val = fmt(v) + " Mbit";
+    showTip(`${fmtTs(t)}<br><b>${val}</b>`, ev.clientX, ev.clientY);
+  });
+
+  cv.addEventListener("mouseleave", () => {
+    hideTip();
+    const c = charts[canvasId];
+    if (c) c.redraw();
+  });
 }
 
 // ---- export ----
@@ -396,6 +495,10 @@ async function init() {
   } else {
     setProvPanelOpen(prefs.get("provOpen", "0") === "1");
   }
+
+  attachHover("c_rtt", "rtt");
+  attachHover("c_loss", "loss");
+  attachHover("c_tp", "tp");
 
   startStream();
   await loadHistory();
