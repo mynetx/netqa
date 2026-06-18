@@ -165,9 +165,16 @@ func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, fl
 			return 0, 0, errLinkBusy
 		}
 	}
+	// Size the payload to the advertised plan so every transfer runs for roughly
+	// the same duration regardless of speed (target unknown -> default payload).
+	down, up, _ := d.store.TargetForNetwork(nid)
+	m := d.measurer
+	m.DownBytes = throughput.BytesForMbit(down)
+	m.UpBytes = throughput.BytesForMbitUp(up)
+
 	// Suppress outage detection while the test saturates the link.
 	d.measuring.Store(true)
-	res, err := d.measurer.Measure(ctx)
+	res, err := m.Measure(ctx)
 	d.measuring.Store(false)
 	if err != nil {
 		return 0, 0, err

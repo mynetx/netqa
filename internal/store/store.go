@@ -233,6 +233,21 @@ func (s *Store) Networks() ([]model.Network, error) {
 	return out, rows.Err()
 }
 
+// TargetForNetwork returns the advertised down/up Mbit of the provider linked to
+// the given network. Both are 0 (with a nil error) when the network has no
+// provider, so callers can fall back to a default payload.
+func (s *Store) TargetForNetwork(nid int64) (down, up float64, err error) {
+	row := s.db.QueryRow(
+		`SELECT p.target_down, p.target_up
+		   FROM networks n JOIN providers p ON p.id = n.provider_id
+		  WHERE n.id = ?`, nid)
+	err = row.Scan(&down, &up)
+	if err == sql.ErrNoRows {
+		return 0, 0, nil
+	}
+	return down, up, err
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

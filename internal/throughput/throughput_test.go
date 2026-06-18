@@ -1,6 +1,13 @@
 package throughput
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -35,6 +42,111 @@ func TestMbit(t *testing.T) {
 	}
 	if got := mbit(100, 0); got != 0 {
 		t.Fatalf("zero-duration must be 0, got %v", got)
+	}
+}
+
+func TestBytesForMbit(t *testing.T) {
+	cases := []struct {
+		mbit float64
+		want int
+	}{
+		{0, fallbackDownBytes},  // unknown target -> fallback
+		{-5, fallbackDownBytes}, // garbage -> fallback
+		{2, minDownBytes},       // 2.5MB raw -> 3MB floor
+		{40, 50_000_000},        // 50MB exact
+		{100, maxDownBytes},     // 125MB raw -> 100MB cap
+		{200, maxDownBytes},     // far over cap
+	}
+	for _, c := range cases {
+		if got := BytesForMbit(c.mbit); got != c.want {
+			t.Errorf("BytesForMbit(%v) = %d want %d", c.mbit, got, c.want)
+		}
+	}
+}
+
+func TestBytesForMbitUp(t *testing.T) {
+	cases := []struct {
+		mbit float64
+		want int
+	}{
+		{0, fallbackUpBytes}, // unknown -> fallback
+		{0.5, minUpBytes},    // 625k raw -> 1MB floor
+		{10, 12_500_000},     // 12.5MB exact
+		{40, maxUpBytes},     // 50MB raw -> 25MB cap
+	}
+	for _, c := range cases {
+		if got := BytesForMbitUp(c.mbit); got != c.want {
+			t.Errorf("BytesForMbitUp(%v) = %d want %d", c.mbit, got, c.want)
+		}
+	}
+}
+
+func TestSplitBytes(t *testing.T) {
+	parts := splitBytes(10, 4) // 3,3,2,2
+	if len(parts) != 4 {
+		t.Fatalf("len = %d want 4", len(parts))
+	}
+	sum := 0
+	for _, p := range parts {
+		sum += p
+	}
+	if sum != 10 {
+		t.Fatalf("sum = %d want 10 (parts %v)", sum, parts)
+	}
+}
+
+func TestMeasureMultiStream(t *testing.T) {
+	var downServed, upReceived atomic.Int64
+	var downStreams int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "__down"):
+			atomic.AddInt32(&downStreams, 1)
+			n, _ := strconv.Atoi(r.URL.Query().Get("bytes"))
+			downServed.Add(int64(n))
+			w.Write(make([]byte, n))
+		case strings.Contains(r.URL.Path, "__up"):
+			n, _ := io.Copy(io.Discard, r.Body)
+			upReceived.Add(n)
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	m := Measurer{
+		Client:    srv.Client(),
+		DownBytes: 4_000_000,
+		UpBytes:   1_000_000,
+		Streams:   4,
+		DownURL:   srv.URL + "/__down?bytes=",
+		UpURL:     srv.URL + "/__up",
+	}
+	res, err := m.Measure(context.Background())
+	if err != nil {
+		t.Fatalf("Measure: %v", err)
+	}
+	if got := downServed.Load(); got != 4_000_000 {
+		t.Errorf("downloaded %d bytes across streams, want 4000000", got)
+	}
+	if downStreams != 4 {
+		t.Errorf("download used %d streams, want 4", downStreams)
+	}
+	if got := upReceived.Load(); got != 1_000_000 {
+		t.Errorf("uploaded %d bytes, want 1000000", got)
+	}
+	if res.DownMbit <= 0 || res.UpMbit <= 0 {
+		t.Errorf("rates must be positive: down=%v up=%v", res.DownMbit, res.UpMbit)
+	}
+}
+
+func TestMeasureDownloadFails(t *testing.T) {
+	// Closed server -> every stream errors -> Measure reports failure.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	m := Measurer{DownBytes: 1_000_000, Streams: 2, DownURL: url + "/__down?bytes=", UpURL: url + "/__up"}
+	if _, err := m.Measure(context.Background()); err == nil {
+		t.Fatal("expected error when all download streams fail")
 	}
 }
 
