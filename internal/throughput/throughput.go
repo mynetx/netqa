@@ -112,6 +112,12 @@ const (
 
 	defaultStreams = 4
 
+	// cloudflareMaxBytes is the largest payload Cloudflare's __down endpoint
+	// serves in a single request; a larger ?bytes= returns 403 with a 1-byte
+	// body. Each stream's share must stay at or under it, so we add streams when
+	// the per-stream payload would otherwise exceed it.
+	cloudflareMaxBytes = 9_000_000
+
 	minDownBytes = 3_000_000
 	maxDownBytes = 100_000_000
 	minUpBytes   = 1_000_000
@@ -151,6 +157,20 @@ func clampBytes(n, lo, hi int) int {
 		return hi
 	}
 	return n
+}
+
+// streamsFor returns a stream count of at least want such that each stream's
+// share of total stays at or under cloudflareMaxBytes, so no single request trips
+// the endpoint's per-request size limit.
+func streamsFor(total, want int) int {
+	if want < 1 {
+		want = 1
+	}
+	need := (total + cloudflareMaxBytes - 1) / cloudflareMaxBytes
+	if need > want {
+		return need
+	}
+	return want
 }
 
 // splitBytes divides total across n streams as evenly as possible, handing the
@@ -238,7 +258,7 @@ func download(ctx context.Context, c *http.Client, url string, total, streams in
 	var ok atomic.Bool
 	var wg sync.WaitGroup
 	start := time.Now()
-	for _, p := range splitBytes(total, streams) {
+	for _, p := range splitBytes(total, streamsFor(total, streams)) {
 		if p <= 0 {
 			continue
 		}
@@ -250,9 +270,14 @@ func download(ctx context.Context, c *http.Client, url string, total, streams in
 			if err != nil {
 				return
 			}
+			defer resp.Body.Close()
+			// A non-200 (e.g. an over-limit ?bytes= 403) carries no payload; count
+			// it as a failed stream rather than a silent zero-byte success.
+			if resp.StatusCode != http.StatusOK {
+				return
+			}
 			ok.Store(true)
 			m, _ := io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
 			sum.Add(uint64(m))
 		}(p)
 	}
@@ -271,7 +296,7 @@ func upload(ctx context.Context, c *http.Client, url string, total, streams int)
 	var sum atomic.Uint64
 	var wg sync.WaitGroup
 	start := time.Now()
-	for _, p := range splitBytes(total, streams) {
+	for _, p := range splitBytes(total, streamsFor(total, streams)) {
 		if p <= 0 {
 			continue
 		}

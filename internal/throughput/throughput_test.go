@@ -95,6 +95,33 @@ func TestSplitBytes(t *testing.T) {
 	}
 }
 
+func TestStreamsFor(t *testing.T) {
+	// Below the cap, the requested count is kept.
+	if got := streamsFor(4_000_000, 4); got != 4 {
+		t.Errorf("streamsFor(4M,4) = %d want 4", got)
+	}
+	// 50M over 4 streams would be 12.5M each (over cap); needs more streams so
+	// every share stays within the limit.
+	got := streamsFor(50_000_000, 4)
+	if per := 50_000_000 / got; per > cloudflareMaxBytes {
+		t.Errorf("streamsFor(50M,4) = %d -> %d bytes/stream exceeds cap %d", got, per, cloudflareMaxBytes)
+	}
+}
+
+// TestMeasureDownloadRejected proves a non-200 reply (like Cloudflare's 403 for
+// an over-limit ?bytes=) is treated as a failed stream, not a silent zero.
+func TestMeasureDownloadRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("x"))
+	}))
+	defer srv.Close()
+	rate, ok := download(context.Background(), srv.Client(), srv.URL+"/__down?bytes=", 8_000_000, 4)
+	if ok || rate != 0 {
+		t.Fatalf("rejected download must fail: rate=%v ok=%v", rate, ok)
+	}
+}
+
 func TestMeasureMultiStream(t *testing.T) {
 	var downServed, upReceived atomic.Int64
 	var downStreams int32
