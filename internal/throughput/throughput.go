@@ -224,42 +224,42 @@ func (m Measurer) Measure(ctx context.Context) (Result, error) {
 	return res, nil
 }
 
-// download runs `streams` parallel GETs totalling `total` bytes. Every request is
-// issued first so the TCP/TLS handshake and time-to-first-byte complete; only
-// then does the clock start and all bodies stream concurrently. This keeps the
-// timed window free of connection setup and lets the combined streams fill a
-// high-latency pipe a single connection cannot. ok is false when no stream
-// established a body (e.g. a real outage).
+// download runs `streams` parallel GETs totalling `total` bytes. The clock starts
+// before any request is issued and each stream is issued and read inside the
+// timed window, so the elapsed time always corresponds to the bytes counted.
+// (Reading bodies only after issuing every request lets the transport buffer an
+// untimed, variable chunk of each payload, decoupling bytes from time and
+// collapsing the rate on a high-latency link.) The payload is sized to ~10s of
+// transfer, so the handshake/TTFB now inside the window is negligible. The
+// combined streams still fill a high-latency pipe a single connection cannot. ok
+// is false when no stream established a body (e.g. a real outage).
 func download(ctx context.Context, c *http.Client, url string, total, streams int) (float64, bool) {
-	bodies := make([]io.ReadCloser, 0, streams)
+	var sum atomic.Uint64
+	var ok atomic.Bool
+	var wg sync.WaitGroup
+	start := time.Now()
 	for _, p := range splitBytes(total, streams) {
 		if p <= 0 {
 			continue
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+strconv.Itoa(p), nil)
-		resp, err := c.Do(req)
-		if err != nil {
-			continue
-		}
-		bodies = append(bodies, resp.Body)
-	}
-	if len(bodies) == 0 {
-		return 0, false
-	}
-
-	var sum atomic.Uint64
-	var wg sync.WaitGroup
-	start := time.Now()
-	for _, b := range bodies {
 		wg.Add(1)
-		go func(body io.ReadCloser) {
+		go func(n int) {
 			defer wg.Done()
-			n, _ := io.Copy(io.Discard, body)
-			body.Close()
-			sum.Add(uint64(n))
-		}(b)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+strconv.Itoa(n), nil)
+			resp, err := c.Do(req)
+			if err != nil {
+				return
+			}
+			ok.Store(true)
+			m, _ := io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			sum.Add(uint64(m))
+		}(p)
 	}
 	wg.Wait()
+	if !ok.Load() {
+		return 0, false
+	}
 	return mbit(sum.Load(), time.Since(start)), true
 }
 
