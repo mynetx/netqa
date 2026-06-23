@@ -97,7 +97,20 @@ func mustServe() {
 	// Bind the configured port, falling back to the next free one so a port
 	// already taken (e.g. by another app) never crash-loops us silently.
 	ln, addr := listenWithFallback(cfg.Port)
-	httpSrv := &http.Server{Handler: srv.Handler()}
+	httpSrv := &http.Server{
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		// WriteTimeout stays 0: handleStream serves an unbounded SSE response, so a
+		// write deadline would kill the live dashboard feed.
+		IdleTimeout: 60 * time.Second,
+	}
+
+	// Self-watchdog: KeepAlive only respawns us on exit, so an alive-but-wedged
+	// daemon (handlers stuck, connections piled up) is never restarted. Probe our
+	// own lock-free /healthz and exit on sustained failure so launchd respawns a
+	// clean process.
+	go watchdog(ctx, addr)
 
 	go func() {
 		<-ctx.Done()
@@ -111,6 +124,55 @@ func mustServe() {
 		fatal("http: %v", err)
 	}
 	fmt.Println("netqa stopped.")
+}
+
+// watchdog periodically probes the local /healthz endpoint and forces a process
+// exit after several consecutive failures, so a wedged-but-alive daemon gets
+// restarted by launchd (KeepAlive only fires on exit, never on a hang). It stops
+// quietly when ctx is cancelled (normal shutdown), so a clean SIGTERM does not
+// trip a spurious exit code.
+func watchdog(ctx context.Context, addr string) {
+	const (
+		interval    = 30 * time.Second
+		probeTO     = 3 * time.Second
+		maxFailures = 3 // ~90s wedged before we bail
+	)
+	url := "http://" + addr + "/healthz"
+	client := &http.Client{Timeout: probeTO}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	fails := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if healthOK(ctx, client, url) {
+				fails = 0
+				continue
+			}
+			fails++
+			fmt.Fprintf(os.Stderr, "watchdog: health probe failed (%d/%d)\n", fails, maxFailures)
+			if fails >= maxFailures {
+				fmt.Fprintf(os.Stderr, "watchdog: daemon wedged, exiting for launchd restart\n")
+				os.Exit(1)
+			}
+		}
+	}
+}
+
+// healthOK reports whether a single /healthz probe returned 200.
+func healthOK(ctx context.Context, c *http.Client, url string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func mustListProviders() {

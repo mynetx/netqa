@@ -48,6 +48,13 @@ func (s *Server) Handler() http.Handler { return s.mux }
 func (s *Server) routes() {
 	sub, _ := fs.Sub(staticFS, "static")
 	s.mux.Handle("/", http.FileServer(http.FS(sub)))
+	// Lock-free liveness probe: touches no store or daemon state, so it answers
+	// instantly even if a request handler is contended. Used by SwiftBar and the
+	// self-watchdog to tell "alive and serving" from "wedged".
+	s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 	// Avoid a noisy 404 for the browser's automatic favicon request.
 	s.mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
