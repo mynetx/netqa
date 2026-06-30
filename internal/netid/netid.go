@@ -42,15 +42,30 @@ func (r *Resolver) Resolve(ctx context.Context, snap env.Snapshot) (int64, error
 		return 0, err
 	}
 	existingASN := ""
+	alreadyAssigned := false
 	if existing != nil {
 		existingASN = existing.ISPASN
+		alreadyAssigned = existing.ProviderID != nil
 	}
 
 	n := model.Network{SSID: snap.SSID, GatewayMAC: snap.GatewayMAC}
 
+	asn := existingASN
 	if r.Fetcher != nil && shouldLookupASN(snap.VPN, existingASN) {
-		if asn, err := r.Fetcher.ASN(ctx); err == nil && asn != "" {
-			n.ISPASN = asn
+		if fresh, err := r.Fetcher.ASN(ctx); err == nil && fresh != "" {
+			n.ISPASN = fresh
+			asn = fresh
+		}
+	}
+
+	// Auto-assign a provider for a not-yet-assigned network from its match rules.
+	// MAC-first matching keeps same-ASN links (e.g. an operator's fiber vs its LTE)
+	// apart; an existing manual assignment is left untouched.
+	if !alreadyAssigned {
+		if ps, err := r.Store.Providers(); err == nil {
+			if pid, ok := MatchProvider(ps, snap.GatewayMAC, asn); ok {
+				n.ProviderID = &pid
+			}
 		}
 	}
 	return r.Store.UpsertNetwork(n)

@@ -451,6 +451,8 @@ async function saveProvider() {
     Notes: $("p_notes").value,
     TargetDownMbit: Number($("p_down").value) || 0,
     TargetUpMbit: Number($("p_up").value) || 0,
+    MatchMACs: $("p_macs").value,
+    MatchASN: $("p_asn").value,
   };
   if (sel !== "all") p.ID = Number(sel);
   await getJSON("/api/providers", {
@@ -468,6 +470,8 @@ function fillProviderForm() {
   $("p_notes").value = p ? p.Notes : "";
   $("p_down").value = p ? p.TargetDownMbit : "";
   $("p_up").value = p ? p.TargetUpMbit : "";
+  $("p_macs").value = p ? p.MatchMACs || "" : "";
+  $("p_asn").value = p ? p.MatchASN || "" : "";
 }
 
 // ---- persisted UI preferences ----

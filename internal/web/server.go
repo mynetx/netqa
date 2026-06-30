@@ -15,6 +15,7 @@ import (
 
 	"github.com/mynetx/netqa/internal/daemon"
 	"github.com/mynetx/netqa/internal/model"
+	"github.com/mynetx/netqa/internal/netid"
 	"github.com/mynetx/netqa/internal/store"
 )
 
@@ -147,7 +148,11 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		writeJSON(w, map[string]int64{"id": id})
+		// Applying a new/edited rule should link matching unassigned networks now,
+		// not only on the next live resolve. Best-effort: a backfill error must not
+		// fail the save.
+		reassigned, _ := netid.ReassignUnassigned(s.store)
+		writeJSON(w, map[string]int64{"id": id, "reassigned": int64(reassigned)})
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
@@ -195,12 +200,12 @@ func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
 
 // historyResponse bundles the chart data for one network over a window.
 type historyResponse struct {
-	From        time.Time           `json:"from"`
-	To          time.Time           `json:"to"`
-	Points      []Point             `json:"points"`
-	Outages     []model.Outage      `json:"outages"`
-	Throughput  []model.Throughput  `json:"throughput"`
-	Traceroutes []model.Traceroute  `json:"traceroutes"`
+	From        time.Time          `json:"from"`
+	To          time.Time          `json:"to"`
+	Points      []Point            `json:"points"`
+	Outages     []model.Outage     `json:"outages"`
+	Throughput  []model.Throughput `json:"throughput"`
+	Traceroutes []model.Traceroute `json:"traceroutes"`
 }
 
 // handleHistory: GET /api/history?network=<id>&hours=<n>&buckets=<n>

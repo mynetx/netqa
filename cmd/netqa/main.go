@@ -71,6 +71,15 @@ func mustServe() {
 	defer s.Close()
 
 	resolver := &netid.Resolver{Store: s, Fetcher: netid.HTTPASNFetcher{}}
+
+	// Apply provider match rules to networks recorded before the rules existed, so
+	// the dashboard shows correct links immediately on startup.
+	if n, err := netid.ReassignUnassigned(s); err != nil {
+		fmt.Fprintf(os.Stderr, "provider backfill: %v\n", err)
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "provider backfill: auto-assigned %d network(s)\n", n)
+	}
+
 	d := daemon.New(cfg, s, resolver)
 
 	if cfg.Alerts {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mynetx/netqa/internal/env"
+	"github.com/mynetx/netqa/internal/model"
 	"github.com/mynetx/netqa/internal/store"
 )
 
@@ -74,6 +75,50 @@ func TestResolveCreatesNetworkAndEnriches(t *testing.T) {
 	}
 	if f.calls != 1 {
 		t.Fatalf("expected no extra ASN lookup, got %d", f.calls)
+	}
+}
+
+func TestResolveAutoAssignsProviderByMAC(t *testing.T) {
+	s := newStore(t)
+	pid, err := s.UpsertProvider(model.Provider{Name: "Fibernet", MatchMACs: "a1:b2:c3"})
+	if err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	r := &Resolver{Store: s, Fetcher: &fakeFetcher{asn: "AS65000 Example Telecom"}}
+
+	snap := env.Snapshot{GatewayMAC: "a1:b2:c3:77:8a:3d", VPN: false}
+	if _, err := r.Resolve(context.Background(), snap); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	got, _ := s.NetworkByFingerprint("", "a1:b2:c3:77:8a:3d")
+	if got == nil || got.ProviderID == nil || *got.ProviderID != pid {
+		t.Fatalf("network not auto-assigned to provider %d: %+v", pid, got)
+	}
+}
+
+func TestResolveDoesNotOverrideManualProvider(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.UpsertProvider(model.Provider{Name: "Auto", MatchMACs: "a1:b2:c3"}); err != nil {
+		t.Fatal(err)
+	}
+	manual, err := s.UpsertProvider(model.Provider{Name: "Manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Network is already assigned to the manual provider by hand.
+	if _, err := s.UpsertNetwork(model.Network{GatewayMAC: "a1:b2:c3:77:8a:3d", ProviderID: &manual}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Resolver{Store: s, Fetcher: &fakeFetcher{asn: "AS65000 Example Telecom"}}
+	if _, err := r.Resolve(context.Background(), env.Snapshot{GatewayMAC: "a1:b2:c3:77:8a:3d"}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	got, _ := s.NetworkByFingerprint("", "a1:b2:c3:77:8a:3d")
+	if got == nil || got.ProviderID == nil || *got.ProviderID != manual {
+		t.Fatalf("auto-assign overrode manual provider %d: %+v", manual, got)
 	}
 }
 

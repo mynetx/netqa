@@ -45,7 +45,9 @@ CREATE TABLE IF NOT EXISTS providers (
 	name            TEXT NOT NULL,
 	target_down     REAL NOT NULL DEFAULT 0,
 	target_up       REAL NOT NULL DEFAULT 0,
-	notes           TEXT NOT NULL DEFAULT ''
+	notes           TEXT NOT NULL DEFAULT '',
+	match_macs      TEXT NOT NULL DEFAULT '',
+	match_asn       TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS networks (
 	id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,8 +114,57 @@ CREATE INDEX IF NOT EXISTS idx_power_ts ON power_events(ts);
 `
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	return s.addMissingColumns()
+}
+
+// addMissingColumns brings an older database up to the current schema: CREATE
+// TABLE IF NOT EXISTS never adds a column to a table that already exists, so
+// columns introduced after a user's DB was created must be added explicitly. Each
+// add is guarded by a column-exists check so migrate stays idempotent.
+func (s *Store) addMissingColumns() error {
+	adds := []struct{ table, column, ddl string }{
+		{"providers", "match_macs", `ALTER TABLE providers ADD COLUMN match_macs TEXT NOT NULL DEFAULT ''`},
+		{"providers", "match_asn", `ALTER TABLE providers ADD COLUMN match_asn TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn(a.table, a.column)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hasColumn reports whether table already has the named column.
+func (s *Store) hasColumn(table, column string) (bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func toUnix(t time.Time) int64 { return t.UTC().UnixNano() }
@@ -138,22 +189,22 @@ func boolToInt(b bool) int {
 func (s *Store) UpsertProvider(p model.Provider) (int64, error) {
 	if p.ID == 0 {
 		res, err := s.db.Exec(
-			`INSERT INTO providers(name, target_down, target_up, notes) VALUES(?,?,?,?)`,
-			p.Name, p.TargetDownMbit, p.TargetUpMbit, p.Notes)
+			`INSERT INTO providers(name, target_down, target_up, notes, match_macs, match_asn) VALUES(?,?,?,?,?,?)`,
+			p.Name, p.TargetDownMbit, p.TargetUpMbit, p.Notes, p.MatchMACs, p.MatchASN)
 		if err != nil {
 			return 0, err
 		}
 		return res.LastInsertId()
 	}
 	_, err := s.db.Exec(
-		`UPDATE providers SET name=?, target_down=?, target_up=?, notes=? WHERE id=?`,
-		p.Name, p.TargetDownMbit, p.TargetUpMbit, p.Notes, p.ID)
+		`UPDATE providers SET name=?, target_down=?, target_up=?, notes=?, match_macs=?, match_asn=? WHERE id=?`,
+		p.Name, p.TargetDownMbit, p.TargetUpMbit, p.Notes, p.MatchMACs, p.MatchASN, p.ID)
 	return p.ID, err
 }
 
 // Providers returns all providers ordered by id.
 func (s *Store) Providers() ([]model.Provider, error) {
-	rows, err := s.db.Query(`SELECT id, name, target_down, target_up, notes FROM providers ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, target_down, target_up, notes, match_macs, match_asn FROM providers ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +212,7 @@ func (s *Store) Providers() ([]model.Provider, error) {
 	var out []model.Provider
 	for rows.Next() {
 		var p model.Provider
-		if err := rows.Scan(&p.ID, &p.Name, &p.TargetDownMbit, &p.TargetUpMbit, &p.Notes); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.TargetDownMbit, &p.TargetUpMbit, &p.Notes, &p.MatchMACs, &p.MatchASN); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

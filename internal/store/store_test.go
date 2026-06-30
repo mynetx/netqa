@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -63,6 +64,90 @@ func TestProviderCRUD(t *testing.T) {
 	}
 	if ps[0].TargetDownMbit != 20 {
 		t.Fatalf("target not updated: got %v want 20", ps[0].TargetDownMbit)
+	}
+}
+
+func TestProviderMatchRulesRoundTrip(t *testing.T) {
+	s := openTemp(t)
+
+	id, err := s.UpsertProvider(model.Provider{
+		Name: "Example ISP", MatchMACs: "a1:b2:c3", MatchASN: "OtherISP,SatNet",
+	})
+	if err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+
+	find := func(pid int64) model.Provider {
+		ps, err := s.Providers()
+		if err != nil {
+			t.Fatalf("Providers: %v", err)
+		}
+		for _, p := range ps {
+			if p.ID == pid {
+				return p
+			}
+		}
+		t.Fatalf("provider %d not found", pid)
+		return model.Provider{}
+	}
+
+	if got := find(id); got.MatchMACs != "a1:b2:c3" || got.MatchASN != "OtherISP,SatNet" {
+		t.Fatalf("match rules not persisted: macs=%q asn=%q", got.MatchMACs, got.MatchASN)
+	}
+
+	// Editing rules must update in place.
+	if _, err := s.UpsertProvider(model.Provider{
+		ID: id, Name: "Example ISP", MatchMACs: "a1:b2:c3,aa:bb", MatchASN: "",
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got := find(id); got.MatchMACs != "a1:b2:c3,aa:bb" || got.MatchASN != "" {
+		t.Fatalf("updated rules wrong: macs=%q asn=%q", got.MatchMACs, got.MatchASN)
+	}
+}
+
+func TestMigrateAddsProviderMatchColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+
+	// Simulate a pre-existing DB whose providers table predates the match columns.
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE providers (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		name        TEXT NOT NULL,
+		target_down REAL NOT NULL DEFAULT 0,
+		target_up   REAL NOT NULL DEFAULT 0,
+		notes       TEXT NOT NULL DEFAULT ''
+	);`); err != nil {
+		t.Fatalf("create old table: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO providers(name) VALUES('Legacy')`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open old db (migration): %v", err)
+	}
+	defer s.Close()
+
+	ps, err := s.Providers()
+	if err != nil {
+		t.Fatalf("Providers after migrate: %v", err)
+	}
+	if len(ps) != 1 || ps[0].Name != "Legacy" {
+		t.Fatalf("legacy row lost in migration: %+v", ps)
+	}
+	if ps[0].MatchMACs != "" || ps[0].MatchASN != "" {
+		t.Fatalf("new columns should default empty: %+v", ps[0])
+	}
+
+	// The migrated row must accept rule edits.
+	if _, err := s.UpsertProvider(model.Provider{ID: ps[0].ID, Name: "Legacy", MatchMACs: "a1:b2:c3"}); err != nil {
+		t.Fatalf("upsert after migrate: %v", err)
 	}
 }
 

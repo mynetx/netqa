@@ -7,12 +7,19 @@ import "time"
 
 // Provider is an ISP plan the user is measuring. TargetDownMbit/TargetUpMbit are
 // the advertised speeds and are editable over time (e.g. 40 -> 20 next month).
+// MatchMACs/MatchASN are optional auto-assign rules: a comma-separated list of
+// gateway MACs or OUI prefixes (e.g. "a1:b2:c3"), and of case-insensitive ASN-org
+// substrings (e.g. "ExampleISP,OtherISP"). They let a new network be linked to this
+// provider automatically. MAC rules win over ASN rules so same-operator links
+// (e.g. a fiber and an LTE link that share one ASN) are never confused.
 type Provider struct {
 	ID             int64
 	Name           string
 	TargetDownMbit float64
 	TargetUpMbit   float64
 	Notes          string
+	MatchMACs      string
+	MatchASN       string
 }
 
 // Network is a concrete network the machine has joined, fingerprinted by its
