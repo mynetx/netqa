@@ -138,6 +138,28 @@ async function saveNetwork(tr) {
   await loadHistory();
 }
 
+// bucketThroughput groups raw speedtest rows into `n` equal time buckets over
+// [from,to], averaging DownMbit per bucket. Empty buckets get DownMbit=null so
+// the chart skips them — this puts each bucket at its true time position (index
+// == time), so the throughput chart scales with the range just like latency/loss.
+function bucketThroughput(tps, from, to, n) {
+  const t0 = +new Date(from), t1 = +new Date(to);
+  const span = t1 - t0;
+  if (n < 1 || span <= 0) return [];
+  const width = span / n;
+  const sum = new Array(n).fill(0), cnt = new Array(n).fill(0);
+  (tps || []).forEach((p) => {
+    const idx = Math.floor((+new Date(p.TS) - t0) / width);
+    if (idx < 0 || idx >= n) return;
+    sum[idx] += p.DownMbit; cnt[idx]++;
+  });
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = { TS: new Date(t0 + i * width).toISOString(), DownMbit: cnt[i] ? sum[i] / cnt[i] : null };
+  }
+  return out;
+}
+
 // ---- canvas charts (minimal line/area, no libs) ----
 const charts = {}; // canvasId -> geometry + redraw closure, populated by chart()
 
@@ -234,7 +256,8 @@ function drawAll() {
     { color: "#f85149", max: 100, gapOnEmpty: true, dots: true });
   const tgt = selectedProviderTargets();
   const tps = state.history ? state.history.throughput : [];
-  chart("c_tp", tps, (p) => p.DownMbit, { color: "#3fb950", bars: true, dots: true, target: tgt ? tgt.TargetDownMbit : 0 });
+  const tpb = state.history ? bucketThroughput(tps, state.history.from, state.history.to, 160) : [];
+  chart("c_tp", tpb, (p) => p.DownMbit, { color: "#3fb950", bars: true, dots: true, target: tgt ? tgt.TargetDownMbit : 0 });
   updateThroughputStat(tps, tgt);
   renderOutages();
 }
