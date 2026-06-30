@@ -23,9 +23,9 @@ func Run(ctx context.Context, target string) (string, []model.TracerouteHop, err
 	// 75s; the capture runs in a background goroutine, so a long wait is harmless.
 	cctx, cancel := context.WithTimeout(ctx, 75*time.Second)
 	defer cancel()
-	// -I: ICMP probes. QCell's network silently drops the default UDP probes
+	// -I: ICMP probes. The ISP's network silently drops the default UDP probes
 	// (every hop past the router shows "*"), but passes ICMP, which reveals the
-	// full path including the QCell-domestic hops and the submarine-cable jump to
+	// full path including the ISP's domestic hops and the submarine-cable jump to
 	// Europe — so the evidence shows where a break actually is. ICMP traceroute is
 	// unprivileged on macOS, so no sudo is needed.
 	// -n: numeric (no DNS, faster). -w 1: 1s wait per probe. -q 3: three probes per
