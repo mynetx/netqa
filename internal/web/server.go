@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mynetx/netqa/internal/daemon"
@@ -43,8 +45,50 @@ func New(s *store.Store, status StatusFunc, speedtest SpeedtestFunc) *Server {
 	return srv
 }
 
-// Handler exposes the mux (useful for tests).
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler returns the dashboard handler wrapped in the local-only guards.
+func (s *Server) Handler() http.Handler {
+	return localOnly(http.NewCrossOriginProtection().Handler(securityHeaders(s.mux)))
+}
+
+// localOnly rejects requests whose Host is not a loopback or local-dev name
+// (localhost, 127.0.0.1, ::1, *.localhost, *.test — the latter for the Herd
+// proxy). The dashboard has no auth, so this blocks DNS-rebinding: a public site
+// resolving its own name to 127.0.0.1 cannot read the API or trigger speedtests.
+// Cross-site POSTs are separately refused by http.CrossOriginProtection.
+func localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLocalHost(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLocalHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".test") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// securityHeaders sets a strict CSP (the page loads only its own script and
+// styles) plus the usual hardening headers.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
 
 func (s *Server) routes() {
 	sub, _ := fs.Sub(staticFS, "static")
@@ -217,7 +261,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	to := time.Now()
 	from := to.Add(-time.Duration(hours) * time.Hour)
 
-	samples, err := s.store.SamplesBetween(nid, from, to)
+	bs, err := s.store.SampleBuckets(nid, from, to, min(buckets, 2000))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -228,7 +272,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, historyResponse{
 		From: from, To: to,
-		Points:      bucketSamples(samples, from, to, buckets),
+		Points:      pointsFromBuckets(bs, from, to),
 		Outages:     outs,
 		Throughput:  tps,
 		Traceroutes: trs,

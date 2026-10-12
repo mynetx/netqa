@@ -4,6 +4,21 @@
 const $ = (id) => document.getElementById(id);
 const fmt = (n, d = 1) => (n == null ? "—" : Number(n).toFixed(d));
 
+// ---- time display ----
+// Evidence is about a line in one place, so times can be pinned to that place's
+// zone (e.g. the ISP's) regardless of where the viewer's laptop currently is.
+// "" = the browser's own zone.
+let displayTZ = "";
+const tzOpt = () => (displayTZ ? { timeZone: displayTZ } : {});
+const fmtDateTime = (d) => new Date(d).toLocaleString(undefined, { ...tzOpt(), hour12: false });
+const fmtTime = (d) => new Date(d).toLocaleTimeString(undefined, { ...tzOpt(), hour12: false });
+function tzLabel() {
+  const name = displayTZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const off = new Intl.DateTimeFormat("en", { timeZone: name, timeZoneName: "shortOffset" })
+    .formatToParts(new Date()).find((p) => p.type === "timeZoneName");
+  return name + (off ? " (" + off.value + ")" : "");
+}
+
 let state = {
   providers: [],
   networks: [],
@@ -55,14 +70,25 @@ async function loadHistory() {
   const hours = $("range").value;
   state.history = await getJSON(`/api/history?network=${nid}&hours=${hours}&buckets=160`);
   state.history.networkID = nid;
+  // The live network may have become known while this request was in flight.
+  if (focusNetworkID() !== nid) return loadHistory();
   drawAll();
 }
 
 // ---- live status (SSE) ----
+// The browser reconnects EventSource on its own; what it does not do is tell the
+// user the numbers on screen are frozen. lastLive drives a "stale" pill instead.
+let lastLive = 0;
 function startStream() {
   const es = new EventSource("/api/stream");
-  es.onmessage = (e) => applyStatus(JSON.parse(e.data));
-  es.onerror = () => { /* browser auto-reconnects; fine on flaky links */ };
+  es.onmessage = (e) => { lastLive = Date.now(); applyStatus(JSON.parse(e.data)); };
+  setInterval(() => {
+    if (lastLive && Date.now() - lastLive > 5000) {
+      $("livedot").className = "dot warn";
+      $("livepill").className = "pill warn";
+      $("livetext").textContent = "dashboard disconnected — reconnecting…";
+    }
+  }, 2000);
   // also pull once immediately
   getJSON("/api/status").then(applyStatus).catch(() => {});
 }
@@ -74,7 +100,13 @@ function applyStatus(s) {
     $("livetext").textContent = "starting…";
     return;
   }
+  const prevLive = state.liveNetworkID;
   state.liveNetworkID = s.network_id || 0;
+  // The live network can arrive after (or change since) the last chart load;
+  // refocus the charts on it right away instead of waiting for the next poll.
+  if (state.liveNetworkID !== prevLive && state.history && focusNetworkID() !== state.history.networkID) {
+    refreshHistory();
+  }
   const online = s.online;
   const cls = online ? "up" : (s.outage_open ? "down" : "warn");
   $("livedot").className = "dot " + cls;
@@ -94,13 +126,19 @@ function applyStatus(s) {
   $("m_gw").textContent = (s.gateway_up ? "up " : "down ") + (s.gateway_ip || "");
   const o = $("m_outage");
   if (s.outage_open) {
-    o.innerHTML = `<span class="tag ${s.outage_class}">${s.outage_class.toUpperCase()} OUTAGE</span>
-      <span class="muted">since ${new Date(s.outage_since).toLocaleTimeString()}</span>`;
+    const oc = outageClass(s.outage_class);
+    o.innerHTML = `<span class="tag ${oc}">${oc.toUpperCase()} OUTAGE</span>
+      <span class="muted">since ${esc(fmtTime(s.outage_since))}</span>`;
   } else o.innerHTML = `<span class="muted">no active ISP outage</span>`;
 }
 
 // ---- rendering ----
-function esc(s) { return (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+// esc makes any value safe for both HTML text and quoted attribute contexts.
+const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function esc(s) { return s == null ? "" : String(s).replace(/[&<>"']/g, (c) => ESC[c]); }
+
+// outageClass whitelists the server's class string before it becomes a CSS class.
+const outageClass = (c) => (["isp", "upstream", "local"].includes(c) ? c : "local");
 
 function selectedProviderTargets() {
   if (state.selectedProvider === "all") return null;
@@ -115,15 +153,29 @@ function renderNetworks() {
       <td>${esc(n.SSID) || "<span class='muted'>(none)</span>"}</td>
       <td class="muted">${esc(n.GatewayMAC)}</td>
       <td class="muted">${esc(n.ISPASN) || "—"}</td>
-      <td><input class="lbl" value="${esc(n.Label)}" style="width:120px"></td>
-      <td><select class="prov">${opts(n.ProviderID || 0)}</select></td>
+      <td><input class="lbl" value="${esc(n.Label)}" aria-label="Label for ${esc(n.SSID || n.GatewayMAC)}" style="width:120px"></td>
+      <td><select class="prov" aria-label="Provider for ${esc(n.SSID || n.GatewayMAC)}">${opts(n.ProviderID || 0)}</select></td>
       <td class="right"><button class="saveNet">save</button></td>
     </tr>`).join("");
   document.querySelectorAll("#netrows .saveNet").forEach((b) =>
     b.addEventListener("click", (e) => saveNetwork(e.target.closest("tr"))));
 }
 
-async function saveNetwork(tr) {
+// toast shows a short, screen-reader-announced message (errors stay longer).
+let toastTimer;
+function toast(msg, bad = false) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = bad ? "bad" : "";
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 6000 : 2500);
+}
+
+// guarded runs an async UI action and reports failure instead of dropping it.
+const guarded = (what, fn) => (...a) => fn(...a).catch((e) => toast(what + " failed: " + e.message, true));
+
+const saveNetwork = guarded("Saving network", async (tr) => {
   const pidVal = tr.querySelector(".prov").value;
   await getJSON("/api/networks", {
     method: "POST",
@@ -136,7 +188,8 @@ async function saveNetwork(tr) {
   });
   await loadNetworks();
   await loadHistory();
-}
+  toast("Network saved");
+});
 
 // bucketThroughput groups raw speedtest rows into `n` equal time buckets over
 // [from,to], averaging DownMbit per bucket. Empty buckets get DownMbit=null so
@@ -163,6 +216,9 @@ function bucketThroughput(tps, from, to, n) {
 // ---- canvas charts (minimal line/area, no libs) ----
 const charts = {}; // canvasId -> geometry + redraw closure, populated by chart()
 
+// css reads a theme colour so canvas charts follow light/dark mode.
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
 function chart(canvasId, points, getY, opts = {}) {
   const cv = $(canvasId);
   const dpr = window.devicePixelRatio || 1;
@@ -172,7 +228,7 @@ function chart(canvasId, points, getY, opts = {}) {
   ctx.clearRect(0, 0, w, h);
   const padL = 38, padB = 16, padT = 8, padR = 8;
   const plotW = w - padL - padR, plotH = h - padT - padB;
-  if (!points || !points.length) { ctx.fillStyle = "#8b97a7"; ctx.fillText("no data", padL, h / 2); return; }
+  if (!points || !points.length) { ctx.fillStyle = css("--mut"); ctx.font = "12px sans-serif"; ctx.fillText("no data", padL, h / 2); charts[canvasId] = null; return; }
 
   let max = opts.max != null ? opts.max : 0;
   points.forEach((p) => { const v = getY(p); if (v != null && v > max) max = v; });
@@ -184,11 +240,12 @@ function chart(canvasId, points, getY, opts = {}) {
   const y = (v) => padT + plotH - (v / max) * plotH;
 
   // axes / gridlines
-  ctx.strokeStyle = "#222a35"; ctx.fillStyle = "#8b97a7"; ctx.font = "10px sans-serif";
+  ctx.strokeStyle = css("--line"); ctx.fillStyle = css("--mut"); ctx.font = "10px sans-serif";
+  const dp = max < 10 ? 1 : 0; // keep small values (e.g. 0.5% loss) readable
   for (let g = 0; g <= 4; g++) {
     const gy = padT + (g / 4) * plotH, val = max * (1 - g / 4);
     ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(w - padR, gy); ctx.stroke();
-    ctx.fillText(val.toFixed(0), 4, gy + 3);
+    ctx.fillText(val.toFixed(dp), 4, gy + 3);
   }
 
   // outage shading
@@ -210,13 +267,13 @@ function chart(canvasId, points, getY, opts = {}) {
 
   // target line
   if (opts.target) {
-    ctx.strokeStyle = "#d29922"; ctx.setLineDash([5, 4]); ctx.beginPath();
+    ctx.strokeStyle = css("--warn"); ctx.setLineDash([5, 4]); ctx.beginPath();
     ctx.moveTo(padL, y(opts.target)); ctx.lineTo(w - padR, y(opts.target)); ctx.stroke();
-    ctx.setLineDash([]); ctx.fillStyle = "#d29922"; ctx.fillText("target " + opts.target, padL + 4, y(opts.target) - 3);
+    ctx.setLineDash([]); ctx.fillStyle = css("--warn"); ctx.fillText("target " + opts.target, padL + 4, y(opts.target) - 3);
   }
 
   // series line
-  ctx.strokeStyle = opts.color || "#4493f8"; ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.strokeStyle = opts.color; ctx.lineWidth = 1.5; ctx.beginPath();
   let started = false;
   points.forEach((p, i) => {
     const v = getY(p);
@@ -227,7 +284,7 @@ function chart(canvasId, points, getY, opts = {}) {
 
   // dot markers so even a single populated bucket is visible on a wide range
   if (opts.dots) {
-    ctx.fillStyle = opts.color || "#4493f8";
+    ctx.fillStyle = opts.color;
     points.forEach((p, i) => {
       const v = getY(p);
       if (v == null || (p.samples === 0 && opts.gapOnEmpty)) return;
@@ -236,13 +293,13 @@ function chart(canvasId, points, getY, opts = {}) {
   }
 
   if (opts.bars) {
-    ctx.fillStyle = opts.color || "#4493f8";
+    ctx.fillStyle = opts.color;
     points.forEach((p, i) => { const v = getY(p); if (v != null) ctx.fillRect(x(i) - 2, y(v), 4, padT + plotH - y(v)); });
   }
 
   // stash geometry + a redraw closure so hover can map cursor->data and repaint
   charts[canvasId] = {
-    ctx, points, getY, x, y, n, color: opts.color || "#4493f8",
+    ctx, points, getY, x, y, n, color: opts.color,
     padL, padT, plotW, plotH, bands,
     redraw: () => chart(canvasId, points, getY, opts),
   };
@@ -251,15 +308,17 @@ function chart(canvasId, points, getY, opts = {}) {
 function drawAll() {
   const hp = state.history ? state.history.points : [];
   chart("c_rtt", hp, (p) => (p.samples ? p.avg_rtt_ms : null),
-    { color: "#4493f8", gapOnEmpty: true, dots: true, outages: state.history ? state.history.outages : [] });
+    { color: css("--accent"), gapOnEmpty: true, dots: true, outages: state.history ? state.history.outages : [] });
+  // max is a floor, not a cap: low loss stays visible instead of hugging 0 on a 0–100 axis.
   chart("c_loss", hp, (p) => (p.samples ? p.loss_pct : null),
-    { color: "#f85149", max: 100, gapOnEmpty: true, dots: true });
+    { color: css("--bad"), max: 5, gapOnEmpty: true, dots: true });
   const tgt = selectedProviderTargets();
   const tps = state.history ? state.history.throughput : [];
   const tpb = state.history ? bucketThroughput(tps, state.history.from, state.history.to, 160) : [];
-  chart("c_tp", tpb, (p) => p.DownMbit, { color: "#3fb950", bars: true, dots: true, target: tgt ? tgt.TargetDownMbit : 0 });
+  chart("c_tp", tpb, (p) => p.DownMbit, { color: css("--good"), bars: true, dots: true, target: tgt ? tgt.TargetDownMbit : 0 });
   updateThroughputStat(tps, tgt);
   renderOutages();
+  $("outtz").textContent = tzLabel();
 }
 
 // updateThroughputStat fills the hero throughput card with the latest measured
@@ -288,11 +347,6 @@ function outageEnd(o) {
   return d.getUTCFullYear() < 2000 ? null : d;
 }
 
-// esc makes traceroute text safe to inject into the path detail row.
-function esc(s) {
-  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-}
-
 function renderOutages() {
   const outs = (state.history && state.history.outages) ? state.history.outages : [];
   const trs = (state.history && state.history.traceroutes) ? state.history.traceroutes : [];
@@ -304,21 +358,24 @@ function renderOutages() {
     const dur = end ? human((end - start) / 1000) : human((Date.now() - start) / 1000) + " (ongoing)";
     const paths = byOutage[o.ID] || [];
     const pathCell = paths.length
-      ? `<button class="pathtoggle" data-outage="${o.ID}">path ▾</button>`
+      ? `<button class="pathtoggle" data-outage="${o.ID}" aria-expanded="false" aria-controls="path_${o.ID}">path ▾</button>`
       : `<span class="muted">—</span>`;
     const detail = paths.length
       ? `<tr class="pathrow" id="path_${o.ID}" hidden><td colspan="5"><pre class="trace">` +
-        paths.map((t) => `→ ${esc(t.Target)} @ ${new Date(t.TS).toLocaleTimeString()}\n${esc(t.Raw)}`).join("\n\n") +
+        paths.map((t) => `→ ${esc(t.Target)} @ ${esc(fmtTime(t.TS))}\n${esc(t.Raw)}`).join("\n\n") +
         `</pre></td></tr>`
       : "";
-    return `<tr><td>${start.toLocaleString()}</td><td>${end ? end.toLocaleString() : "—"}</td>` +
-      `<td>${dur}</td><td><span class="tag ${o.Class}">${o.Class}</span></td><td>${pathCell}</td></tr>${detail}`;
+    const oc = outageClass(o.Class);
+    return `<tr><td>${esc(fmtDateTime(start))}</td><td>${end ? esc(fmtDateTime(end)) : "—"}</td>` +
+      `<td>${dur}</td><td><span class="tag ${oc}">${oc}</span></td><td>${pathCell}</td></tr>${detail}`;
   }).join("") : `<tr><td colspan="5" class="muted">No ISP outages in range. 🎉 (or your line behaved)</td></tr>`;
 
   document.querySelectorAll(".pathtoggle").forEach((b) => {
     b.onclick = () => {
       const row = $("path_" + b.dataset.outage);
-      if (row) row.hidden = !row.hidden;
+      if (!row) return;
+      row.hidden = !row.hidden;
+      b.setAttribute("aria-expanded", String(!row.hidden));
     };
   });
 }
@@ -330,10 +387,10 @@ function human(sec) {
 }
 
 // ---- chart hover: crosshair + dot + floating tooltip ----
-// fmtTs renders a point time as "Mon 18 June 21:00" (24h, viewer timezone).
+// fmtTs renders a point time as "Mon 18 June 21:00" (24h, display timezone).
 function fmtTs(t) {
   const parts = new Intl.DateTimeFormat(undefined, {
-    weekday: "short", day: "numeric", month: "long",
+    ...tzOpt(), weekday: "short", day: "numeric", month: "long",
     hour: "2-digit", minute: "2-digit", hour12: false,
   }).formatToParts(new Date(t));
   const g = (type) => (parts.find((p) => p.type === type) || {}).value || "";
@@ -378,7 +435,7 @@ function attachHover(canvasId, kind) {
         c.ctx.fillStyle = "rgba(248,81,73,0.32)";
         c.ctx.fillRect(band.xs, c.padT, Math.max(1, band.xe - band.xs), c.plotH);
         showTip(
-          `<b class="tag ${o.Class}">${o.Class}</b> outage<br>` +
+          `<b class="tag ${outageClass(o.Class)}">${outageClass(o.Class)}</b> outage<br>` +
           `${fmtTs(start)} → ${endD ? fmtTs(endD) : "now"}<br>` +
           `<b>${len}</b>`,
           ev.clientX, ev.clientY);
@@ -393,7 +450,7 @@ function attachHover(canvasId, kind) {
     const px = c.x(i);
 
     c.redraw();
-    c.ctx.strokeStyle = "rgba(232,238,246,0.35)"; c.ctx.lineWidth = 1;
+    c.ctx.strokeStyle = css("--mut"); c.ctx.lineWidth = 1;
     c.ctx.beginPath(); c.ctx.moveTo(px, c.padT); c.ctx.lineTo(px, c.padT + c.plotH); c.ctx.stroke();
     if (v != null) {
       c.ctx.fillStyle = c.color;
@@ -419,9 +476,9 @@ function attachHover(canvasId, kind) {
 // ---- export ----
 function exportCSV() {
   if (!state.history) return;
-  const rows = [["bucket_time", "avg_rtt_ms", "loss_pct", "samples"]];
+  const rows = [["bucket_time_utc", "avg_rtt_ms", "loss_pct", "samples"]];
   (state.history.points || []).forEach((p) => rows.push([p.t, p.avg_rtt_ms, p.loss_pct, p.samples]));
-  rows.push([]); rows.push(["outage_start", "outage_end", "class"]);
+  rows.push([]); rows.push(["outage_start_utc", "outage_end_utc", "class"]);
   (state.history.outages || []).forEach((o) => {
     const end = outageEnd(o);
     rows.push([o.Start, end ? end.toISOString() : "ongoing", o.Class]);
@@ -444,7 +501,7 @@ function applyPresentation() {
 }
 
 // ---- provider editing ----
-async function saveProvider() {
+const saveProvider = guarded("Saving provider", async () => {
   const sel = state.selectedProvider;
   const p = {
     Name: $("p_name").value || "Provider",
@@ -462,7 +519,8 @@ async function saveProvider() {
   await loadProviders();
   await loadNetworks();
   drawAll();
-}
+  toast("Provider saved");
+});
 
 function fillProviderForm() {
   const p = selectedProviderTargets();
@@ -484,7 +542,7 @@ const prefs = {
 function setProvPanelOpen(open) {
   $("provpanel").classList.toggle("open", open);
   $("provbody").hidden = !open;
-  $("provchevron").textContent = "▸"; // CSS rotates it when .open
+  $("provtoggle").setAttribute("aria-expanded", String(open));
   prefs.set("provOpen", open ? "1" : "0");
 }
 $("provtoggle").addEventListener("click", () => setProvPanelOpen($("provbody").hidden));
@@ -493,9 +551,14 @@ $("provtoggle").addEventListener("click", () => setProvPanelOpen($("provbody").h
 $("provider").addEventListener("change", (e) => {
   state.selectedProvider = e.target.value;
   prefs.set("provider", e.target.value);
-  fillProviderForm(); loadHistory();
+  fillProviderForm(); refreshHistory();
 });
-$("range").addEventListener("change", (e) => { prefs.set("range", e.target.value); loadHistory(); });
+$("range").addEventListener("change", (e) => { prefs.set("range", e.target.value); refreshHistory(); });
+$("tz").addEventListener("change", (e) => {
+  displayTZ = e.target.value;
+  prefs.set("tz", displayTZ);
+  drawAll();
+});
 $("presmode").addEventListener("change", (e) => {
   state.presentation = e.target.checked;
   prefs.set("presentation", e.target.checked ? "1" : "0");
@@ -506,6 +569,9 @@ $("p_save").addEventListener("click", saveProvider);
 
 // Click the throughput card to force an immediate speed test.
 $("tpcard").addEventListener("click", runSpeedtestNow);
+$("tpcard").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); runSpeedtestNow(); }
+});
 async function runSpeedtestNow() {
   const el = $("m_tp");
   if (el.dataset.busy) return; // ignore double-clicks while running
@@ -517,6 +583,7 @@ async function runSpeedtestNow() {
     if (!r.ok) throw new Error(await r.text());
     await loadHistory(); // refresh chart + hero stat with the new point
   } catch (e) {
+    toast("Speed test failed: " + e.message, true);
     el.textContent = "failed"; el.style.color = "var(--bad)";
     setTimeout(() => { el.textContent = prev; el.style.color = prevCol; }, 2500);
   } finally {
@@ -530,6 +597,9 @@ async function init() {
 
   // Restore saved UI preferences.
   $("range").value = prefs.get("range", "24");
+  displayTZ = prefs.get("tz", "");
+  if ([...$("tz").options].some((o) => o.value === displayTZ)) $("tz").value = displayTZ;
+  else displayTZ = "";
   const savedProvider = prefs.get("provider", "all");
   if ([...$("provider").options].some((o) => o.value === savedProvider)) {
     $("provider").value = savedProvider;
@@ -554,6 +624,22 @@ async function init() {
 
   startStream();
   await loadHistory();
-  setInterval(loadHistory, 30000); // refresh charts periodically
+  scheduleHistory();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshHistory(); });
+  let rz;
+  window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(drawAll, 150); });
+}
+
+// Charts refresh on a timer that scales with the range (a 30-day view gains
+// nothing from a 30s poll) and skips work while the tab is hidden.
+let historyTimer;
+function scheduleHistory() {
+  clearTimeout(historyTimer);
+  const hours = Number($("range").value);
+  historyTimer = setTimeout(refreshHistory, hours <= 24 ? 30000 : 120000);
+}
+function refreshHistory() {
+  if (document.hidden) return scheduleHistory();
+  loadHistory().catch((e) => toast("Refreshing charts failed: " + e.message, true)).finally(scheduleHistory);
 }
 init().catch((e) => { $("livetext").textContent = "init error: " + e.message; });

@@ -14,48 +14,22 @@ type Point struct {
 	Samples int       `json:"samples"`
 }
 
-// bucketSamples groups samples into `buckets` equal time buckets over [from,to],
-// computing average successful RTT and loss% per bucket. Empty buckets are kept
+// pointsFromBuckets turns equal-width sample buckets starting at from into chart
+// points: average successful RTT and loss% per bucket. Empty buckets are kept
 // (Samples==0) so the chart shows gaps rather than interpolating across them.
-func bucketSamples(samples []model.Sample, from, to time.Time, buckets int) []Point {
-	if buckets < 1 {
-		buckets = 1
-	}
-	span := to.Sub(from)
-	if span <= 0 {
+func pointsFromBuckets(bs []model.SampleBucket, from, to time.Time) []Point {
+	if len(bs) == 0 || !to.After(from) {
 		return nil
 	}
-	width := span / time.Duration(buckets)
-	if width <= 0 {
-		width = time.Nanosecond
-	}
-
-	type acc struct {
-		rttSum float64
-		ok     int
-		total  int
-	}
-	accs := make([]acc, buckets)
-	for _, s := range samples {
-		idx := int(s.TS.Sub(from) / width)
-		if idx < 0 || idx >= buckets {
-			continue
+	width := to.Sub(from) / time.Duration(len(bs))
+	out := make([]Point, len(bs))
+	for i, b := range bs {
+		p := Point{T: from.Add(time.Duration(i) * width), Samples: b.Total}
+		if b.Total > 0 {
+			p.LossPct = 100 * float64(b.Total-b.OK) / float64(b.Total)
 		}
-		accs[idx].total++
-		if s.Success {
-			accs[idx].ok++
-			accs[idx].rttSum += s.RTTms
-		}
-	}
-
-	out := make([]Point, buckets)
-	for i := range accs {
-		p := Point{T: from.Add(time.Duration(i) * width), Samples: accs[i].total}
-		if accs[i].total > 0 {
-			p.LossPct = 100 * float64(accs[i].total-accs[i].ok) / float64(accs[i].total)
-		}
-		if accs[i].ok > 0 {
-			p.AvgRTT = accs[i].rttSum / float64(accs[i].ok)
+		if b.OK > 0 {
+			p.AvgRTT = b.RTTSum / float64(b.OK)
 		}
 		out[i] = p
 	}

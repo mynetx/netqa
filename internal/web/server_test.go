@@ -17,7 +17,7 @@ import (
 // stall it.
 func TestHealthz(t *testing.T) {
 	s := New(nil, func() daemon.Status { return daemon.Status{} }, nil)
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/healthz", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -47,7 +47,7 @@ func TestPostProviderBackfillsNetworks(t *testing.T) {
 
 	srv := New(st, func() daemon.Status { return daemon.Status{} }, nil)
 	body := `{"Name":"Example ISP","MatchMACs":"a1:b2:c3"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/providers", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8799/api/providers", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -57,5 +57,36 @@ func TestPostProviderBackfillsNetworks(t *testing.T) {
 	got, _ := st.NetworkByFingerprint("", "a1:b2:c3:77:8a:3d")
 	if got == nil || got.ProviderID == nil {
 		t.Fatalf("network not backfilled after provider save: %+v", got)
+	}
+}
+
+// The unauthenticated dashboard must refuse foreign Host headers (DNS rebinding)
+// and cross-site POSTs (CSRF), while serving local names and the Herd proxy.
+func TestLocalOnlyGuards(t *testing.T) {
+	srv := New(nil, func() daemon.Status { return daemon.Status{} }, nil)
+	cases := []struct {
+		name, method, url string
+		hdr               map[string]string
+		want              int
+	}{
+		{"loopback", "GET", "http://127.0.0.1:8799/healthz", nil, 200},
+		{"ipv6 loopback", "GET", "http://[::1]:8799/healthz", nil, 200},
+		{"herd proxy", "GET", "https://netqa.test/healthz", nil, 200},
+		{"rebinding host", "GET", "http://evil.example/healthz", nil, 403},
+		{"cross-site post", "POST", "http://localhost:8799/api/speedtest",
+			map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, 403},
+		{"same-origin post reaches handler", "POST", "http://localhost:8799/api/speedtest",
+			map[string]string{"Sec-Fetch-Site": "same-origin"}, 503}, // speedtest nil -> 503
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(c.method, c.url, nil)
+		for k, v := range c.hdr {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("%s: %s %s = %d want %d", c.name, c.method, c.url, rec.Code, c.want)
+		}
 	}
 }

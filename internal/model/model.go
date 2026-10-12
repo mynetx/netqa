@@ -50,6 +50,13 @@ type Sample struct {
 	VPN       bool
 }
 
+// SampleBucket aggregates the samples of one equal-width time bucket.
+type SampleBucket struct {
+	Total  int     // samples in the bucket
+	OK     int     // successful samples
+	RTTSum float64 // sum of RTTms over successful samples
+}
+
 // OutageClass classifies a connectivity gap. Only ISP and Upstream count against
 // the provider; Local (wifi off / gateway down / asleep) never does.
 type OutageClass string

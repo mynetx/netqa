@@ -367,6 +367,37 @@ func (s *Store) LastSampleBefore(networkID int64, t time.Time) (time.Time, error
 	return fromUnix(ts.Int64), nil
 }
 
+// SampleBuckets aggregates a network's samples in [from, to) into n equal time
+// buckets inside SQLite, so a 30-day chart reads ~n rows instead of every raw
+// sample. Empty buckets are returned zeroed, so the result always has n entries.
+func (s *Store) SampleBuckets(networkID int64, from, to time.Time, n int) ([]model.SampleBucket, error) {
+	out := make([]model.SampleBucket, max(n, 0))
+	f, t := toUnix(from), toUnix(to)
+	if n < 1 || t <= f {
+		return out, nil
+	}
+	width := max((t-f)/int64(n), 1)
+	rows, err := s.db.Query(
+		`SELECT (ts - ?) / ? AS b, COUNT(*), SUM(success), COALESCE(SUM(CASE WHEN success=1 THEN rtt_ms END), 0)
+		 FROM samples WHERE network_id=? AND ts >= ? AND ts < ? GROUP BY b`,
+		f, width, networkID, f, t)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var b int64
+		var sb model.SampleBucket
+		if err := rows.Scan(&b, &sb.Total, &sb.OK, &sb.RTTSum); err != nil {
+			return nil, err
+		}
+		if b >= 0 && b < int64(n) {
+			out[b] = sb
+		}
+	}
+	return out, rows.Err()
+}
+
 // --- Outages ---
 
 // OpenOutage creates a new ongoing outage and returns its id.
