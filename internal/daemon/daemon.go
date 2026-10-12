@@ -31,6 +31,7 @@ type Status struct {
 	Iface       string            `json:"iface"`
 	GatewayIP   string            `json:"gateway_ip"`
 	VPN         bool              `json:"vpn"`
+	Metered     bool              `json:"metered"`
 	Online      bool              `json:"online"`
 	GatewayUp   bool              `json:"gateway_up"`
 	LossPct     float64           `json:"loss_pct"`
@@ -76,6 +77,7 @@ var (
 	errNoNetwork = errors.New("no network identified yet")
 	errLinkBusy  = errors.New("link busy")
 	errTPRunning = errors.New("a speed test is already running")
+	errMetered   = errors.New("metered link: daily speed-test budget used")
 )
 
 // New builds a Daemon. The resolver's Fetcher should be a real HTTPASNFetcher in
@@ -165,7 +167,7 @@ func (d *Daemon) RunSpeedtestNow(ctx context.Context) (down, up float64, err err
 // busy with user traffic, so an automatic test never fights real usage.
 func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, float64, error) {
 	d.mu.RLock()
-	iface, nid, vpn := d.curIfce, d.status.NetworkID, d.status.VPN
+	iface, nid, vpn, metered := d.curIfce, d.status.NetworkID, d.status.VPN, d.status.Metered
 	d.mu.RUnlock()
 	if nid == 0 {
 		return 0, 0, errNoNetwork
@@ -185,6 +187,10 @@ func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, fl
 	m := d.measurer
 	m.DownBytes = throughput.BytesForMbit(down)
 	m.UpBytes = throughput.BytesForMbitUp(up)
+	cost := int64(m.DownBytes + m.UpBytes)
+	if !force && metered && !d.withinMeteredBudget(cost) {
+		return 0, 0, errMetered
+	}
 
 	// Suppress outage detection while the test saturates the link.
 	d.measuring.Store(true)
@@ -194,7 +200,7 @@ func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, fl
 		return 0, 0, err
 	}
 	if err := d.store.InsertThroughput(model.Throughput{
-		NetworkID: nid, TS: time.Now(), DownMbit: res.DownMbit, UpMbit: res.UpMbit, VPN: vpn,
+		NetworkID: nid, TS: time.Now(), DownMbit: res.DownMbit, UpMbit: res.UpMbit, VPN: vpn, Bytes: cost,
 	}); err != nil {
 		return 0, 0, err
 	}
@@ -202,6 +208,17 @@ func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, fl
 	d.lastTPRun = time.Now()
 	d.mu.Unlock()
 	return res.DownMbit, res.UpMbit, nil
+}
+
+// withinMeteredBudget reports whether an automatic test costing cost bytes still
+// fits the rolling-24h metered budget, counting every recorded test.
+func (d *Daemon) withinMeteredBudget(cost int64) bool {
+	used, err := d.store.ThroughputBytesSince(time.Now().Add(-24 * time.Hour))
+	if err != nil {
+		log.Printf("daemon: speed-test data used: %v", err)
+		return false // unknown usage on a metered link: err on the side of not spending
+	}
+	return float64(used+cost) <= d.cfg.MeteredDailyMB*1e6
 }
 
 // reachable returns true if the host answers ICMP or a TCP:443 connect.
@@ -258,7 +275,7 @@ func (d *Daemon) tick(ctx context.Context) {
 	d.manageOutage(nid, now, snap.VPN, isOut, class)
 
 	st := Status{
-		TS: now, NetworkID: nid, SSID: snap.SSID, Iface: snap.Iface, GatewayIP: snap.GatewayIP, VPN: snap.VPN,
+		TS: now, NetworkID: nid, SSID: snap.SSID, Iface: snap.Iface, GatewayIP: snap.GatewayIP, VPN: snap.VPN, Metered: snap.Metered,
 		Online: internetUp, GatewayUp: gatewayUp,
 		LossPct: d.window.LossPct(), AvgRTTms: d.window.AvgRTTms(), JitterMs: d.window.JitterMs(),
 	}

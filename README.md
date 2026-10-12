@@ -109,8 +109,18 @@ local daemon — no extra setup.
 | `throughput_check_interval` | 2m | how often an idle window is checked for a test |
 | `throughput_min_gap` | 5m | minimum time between automatic speed tests |
 | `throughput_idle_mbit` | 3.0 | run a test whenever the link uses less than this (X Mbit) |
+| `metered_daily_mb` | 200 | data automatic speed tests may use per rolling 24h on a metered link (manual tests are never capped) |
 | `port` | 8799 | dashboard port |
 | `alerts` | true | macOS outage notifications |
+
+### Metered links
+
+A link counts as metered exactly when macOS says so: an *expensive* interface
+(cellular, iPhone/iPad Personal Hotspot) or **Low Data Mode**, which you can switch
+on per Wi-Fi network in System Settings → Wi-Fi → Details. It is read from
+Network.framework, works through a VPN, and shows as "metered" on the
+Connection card. A router-based LTE box (MiFi) looks like ordinary Wi-Fi to
+macOS, so turn on Low Data Mode for that network if its data is capped.
 
 ## Status / not yet built
 
@@ -118,6 +128,7 @@ Implemented & tested: store, prober, outage classifier, env (VPN-proof gateway
 discovery), network identity, idle-aware throughput, config, daemon, dashboard,
 notifications, launchd.
 
-Planned next increment: DNS-health collector, traceroute-on-drop capture,
-server-side PDF report (CSV export works today), IOKit sleep/wake event recording
-(the classifier already excludes asleep gaps via the awake guard).
+Planned next increment: DNS-health collector,
+server-side PDF report (CSV export works today). Sleep and daemon downtime are
+excluded by gap detection: an outage open before a gap in observation is closed
+at the last observed tick.

@@ -120,6 +120,7 @@ function applyStatus(s) {
   $("m_rtt").textContent = fmt(s.avg_rtt_ms) + " ms";
   $("m_jit").textContent = fmt(s.jitter_ms) + " ms";
   $("m_vpn").textContent = s.vpn ? "on" : "off";
+  $("m_metered").hidden = !s.metered;
   // SSID is often hidden from background processes on macOS 14.4+ (needs Location
   // permission). Fall back to showing the connected interface instead of blank.
   $("m_ssid").textContent = s.ssid || s.iface || "—";

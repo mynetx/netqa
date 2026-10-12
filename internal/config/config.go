@@ -35,6 +35,10 @@ type Config struct {
 	ThroughputIdleMbit float64 `yaml:"throughput_idle_mbit"`
 	// Port is the local dashboard HTTP port.
 	Port int `yaml:"port"`
+	// MeteredDailyMB caps the data automatic speed tests may use per rolling 24h
+	// while macOS reports the link as metered (expensive, e.g. cellular/Personal
+	// Hotspot, or Low Data Mode). Manual tests are never capped.
+	MeteredDailyMB float64 `yaml:"metered_daily_mb"`
 	// Alerts enables macOS notifications on confirmed outages.
 	Alerts bool `yaml:"alerts"`
 }
@@ -52,6 +56,7 @@ func Default() Config {
 		ThroughputMinGap:        5 * time.Minute,
 		ThroughputIdleMbit:      3.0,
 		Port:                    8799,
+		MeteredDailyMB:          200,
 		Alerts:                  true,
 	}
 }
@@ -128,6 +133,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ThroughputMinGap == 0 {
 		c.ThroughputMinGap = d.ThroughputMinGap
+	}
+	if c.MeteredDailyMB == 0 {
+		c.MeteredDailyMB = d.MeteredDailyMB
 	}
 	if c.ThroughputIdleMbit == 0 {
 		c.ThroughputIdleMbit = d.ThroughputIdleMbit

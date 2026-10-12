@@ -16,6 +16,7 @@ type Snapshot struct {
 	Iface      string // physical default-route interface (e.g. en0)
 	LinkUp     bool   // a usable physical link exists (wired or Wi-Fi)
 	VPN        bool
+	Metered    bool // macOS marks the path expensive or Low Data Mode (see Metered)
 }
 
 // WiFiInterface is the macOS Wi-Fi device. en0 on most Macs; overridable.
@@ -56,6 +57,7 @@ func Observe(ctx context.Context) Snapshot {
 	// VPN judged from the IPv4 default route only (reuses netstatOut), so macOS's
 	// idle IPv6 utun interfaces never trigger a false positive.
 	s.VPN = vpnActiveInet(netstatOut)
+	s.Metered, _ = Metered()
 	return s
 }
 

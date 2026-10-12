@@ -89,6 +89,7 @@ type Throughput struct {
 	DownMbit  float64
 	UpMbit    float64
 	VPN       bool
+	Bytes     int64 // payload transferred by the test (down + up)
 }
 
 // DNSResult is one DNS resolution probe.

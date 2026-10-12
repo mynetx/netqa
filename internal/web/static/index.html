@@ -127,7 +127,7 @@
   .tag { padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
   .tag.isp{background:var(--bad-bg);color:var(--bad-fg);} .tag.upstream{background:var(--up-bg);color:var(--up-fg);}
   .tag.local{background:var(--loc-bg);color:var(--loc-fg);}
-  .muted{color:var(--mut);} .right{text-align:right;}
+  .muted{color:var(--mut);} .stat .sub b.warnc{color:var(--warn);} .right{text-align:right;}
   .grow{ flex:1; }
   .pathtoggle{ background:none;border:1px solid var(--mut);color:var(--fg);border-radius:6px;
     font:inherit;font-size:11px;padding:1px 8px;cursor:pointer; }
@@ -204,7 +204,8 @@
     <div class="card stat">
       <div class="lbl">Connection</div>
       <div class="num sm" id="m_ssid">—</div>
-      <div class="sub">VPN <b id="m_vpn">—</b> · GW <b id="m_gw">—</b></div>
+      <div class="sub">VPN <b id="m_vpn">—</b> · GW <b id="m_gw">—</b><span id="m_metered" hidden
+        title="macOS reports this link as metered (cellular, Personal Hotspot or Low Data Mode): automatic speed tests stay within the daily data budget"> · <b class="warnc">metered</b></span></div>
     </div>
   </section>
 

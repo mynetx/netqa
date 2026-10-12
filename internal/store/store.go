@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS throughput (
 	ts          INTEGER NOT NULL,
 	down_mbit   REAL NOT NULL,
 	up_mbit     REAL NOT NULL,
-	vpn         INTEGER NOT NULL DEFAULT 0
+	vpn         INTEGER NOT NULL DEFAULT 0,
+	bytes       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_throughput_net_ts ON throughput(network_id, ts);
 CREATE TABLE IF NOT EXISTS dns_results (
@@ -135,6 +136,7 @@ func (s *Store) addMissingColumns() error {
 	adds := []struct{ table, column, ddl string }{
 		{"providers", "match_macs", `ALTER TABLE providers ADD COLUMN match_macs TEXT NOT NULL DEFAULT ''`},
 		{"providers", "match_asn", `ALTER TABLE providers ADD COLUMN match_asn TEXT NOT NULL DEFAULT ''`},
+		{"throughput", "bytes", `ALTER TABLE throughput ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, a := range adds {
 		has, err := s.hasColumn(a.table, a.column)
@@ -480,9 +482,16 @@ func scanOutage(row scanner) (*model.Outage, error) {
 // InsertThroughput stores one speed-test result.
 func (s *Store) InsertThroughput(t model.Throughput) error {
 	_, err := s.db.Exec(
-		`INSERT INTO throughput(network_id, ts, down_mbit, up_mbit, vpn) VALUES(?,?,?,?,?)`,
-		t.NetworkID, toUnix(t.TS), t.DownMbit, t.UpMbit, boolToInt(t.VPN))
+		`INSERT INTO throughput(network_id, ts, down_mbit, up_mbit, vpn, bytes) VALUES(?,?,?,?,?,?)`,
+		t.NetworkID, toUnix(t.TS), t.DownMbit, t.UpMbit, boolToInt(t.VPN), t.Bytes)
 	return err
+}
+
+// ThroughputBytesSince sums the data used by speed tests (all networks) since t.
+func (s *Store) ThroughputBytesSince(t time.Time) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(bytes), 0) FROM throughput WHERE ts >= ?`, toUnix(t)).Scan(&n)
+	return n, err
 }
 
 // ThroughputBetween returns throughput rows for a network in [from, to].

@@ -332,3 +332,40 @@ func TestInsertThroughputDNSPower(t *testing.T) {
 		t.Fatalf("unexpected power events: %+v", pes)
 	}
 }
+
+// An existing throughput table gains the bytes column, and usage sums only
+// tests at or after the cut-off (old rows count as 0 bytes).
+func TestThroughputBytesSince(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE throughput (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, network_id INTEGER NOT NULL, ts INTEGER NOT NULL,
+		down_mbit REAL NOT NULL, up_mbit REAL NOT NULL, vpn INTEGER NOT NULL DEFAULT 0);
+		INSERT INTO throughput(network_id, ts, down_mbit, up_mbit) VALUES(1, 1, 10, 5);`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open old db (migration): %v", err)
+	}
+	defer s.Close()
+	now := time.Now()
+	for _, tp := range []model.Throughput{
+		{NetworkID: 1, TS: now.Add(-25 * time.Hour), Bytes: 1000},
+		{NetworkID: 1, TS: now.Add(-time.Hour), Bytes: 300},
+		{NetworkID: 2, TS: now, Bytes: 200},
+	} {
+		if err := s.InsertThroughput(tp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.ThroughputBytesSince(now.Add(-24 * time.Hour))
+	if err != nil || got != 500 {
+		t.Fatalf("ThroughputBytesSince = %d, %v; want 500", got, err)
+	}
+}

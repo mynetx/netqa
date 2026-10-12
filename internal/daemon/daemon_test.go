@@ -116,3 +116,27 @@ func TestManageOutageRestartUsesLastSample(t *testing.T) {
 		t.Fatalf("stale outage must end at the last stored sample %v, got %+v", last, closed)
 	}
 }
+
+// On a metered link, automatic tests stop once the rolling-24h budget would be
+// exceeded; data used more than 24h ago no longer counts.
+func TestWithinMeteredBudget(t *testing.T) {
+	d, s := newDaemon(t)
+	d.cfg.MeteredDailyMB = 100
+	nid, _ := s.UpsertNetwork(model.Network{GatewayMAC: "aa"})
+	now := time.Now()
+	for _, tp := range []model.Throughput{
+		{TS: now.Add(-30 * time.Hour), Bytes: 90e6}, // outside the window
+		{TS: now.Add(-2 * time.Hour), Bytes: 60e6},
+	} {
+		tp.NetworkID = nid
+		if err := s.InsertThroughput(tp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !d.withinMeteredBudget(40e6) {
+		t.Fatal("60 MB used + 40 MB test fits a 100 MB budget")
+	}
+	if d.withinMeteredBudget(41e6) {
+		t.Fatal("60 MB used + 41 MB test must exceed a 100 MB budget")
+	}
+}
