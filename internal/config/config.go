@@ -42,11 +42,11 @@ type Config struct {
 // Default returns a sane default configuration.
 func Default() Config {
 	return Config{
-		Targets:            []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"},
-		DNSServers:         []string{"1.1.1.1", "8.8.8.8"},
-		DNSHost:            "example.com",
-		ProbeInterval:      5 * time.Second,
-		WindowSize:         60,
+		Targets:                 []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"},
+		DNSServers:              []string{"1.1.1.1", "8.8.8.8"},
+		DNSHost:                 "example.com",
+		ProbeInterval:           5 * time.Second,
+		WindowSize:              60,
 		DNSInterval:             60 * time.Second,
 		ThroughputCheckInterval: 2 * time.Minute,
 		ThroughputMinGap:        5 * time.Minute,

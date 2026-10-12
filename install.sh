@@ -11,6 +11,7 @@ BIN_DIR="$HOME/.local/bin"
 BIN="$BIN_DIR/netqa"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PORT=8799
+LOGDIR="$HOME/Library/Logs/netqa"
 
 echo "==> Building netqa…"
 mkdir -p "$BIN_DIR"
@@ -25,7 +26,7 @@ if [ -f "$CFG" ]; then
 fi
 
 echo "==> Installing launchd agent…"
-mkdir -p "$HOME/Library/LaunchAgents"
+mkdir -p "$HOME/Library/LaunchAgents" "$LOGDIR"
 cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -40,19 +41,20 @@ cat > "$PLIST" <<PLISTEOF
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>ProcessType</key><string>Background</string>
-  <key>StandardOutPath</key><string>/tmp/netqa.out.log</string>
-  <key>StandardErrorPath</key><string>/tmp/netqa.err.log</string>
+  <key>StandardOutPath</key><string>$LOGDIR/netqa.out.log</string>
+  <key>StandardErrorPath</key><string>$LOGDIR/netqa.err.log</string>
 </dict>
 </plist>
 PLISTEOF
 
-# Reload cleanly whether or not it's already running.
+# (Re)load so plist changes apply, then restart in place so the new binary runs.
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load -w "$PLIST"
+launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
 
 echo "==> Waiting for it to come up…"
 for i in $(seq 1 15); do
-  if curl -fsS "http://127.0.0.1:$PORT/api/status" >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
     echo "    up on port $PORT"
     break
   fi
@@ -63,6 +65,7 @@ cat <<DONE
 
 netqa is running and will auto-start at every login.
   Dashboard:  http://127.0.0.1:$PORT   (open it yourself when you want it)
-  Logs:       /tmp/netqa.out.log  /tmp/netqa.err.log
+  Logs:       $LOGDIR/netqa.{out,err}.log  (logs survive reboots, unlike /tmp)
+  Update:     make deploy
   Stop/remove: ./uninstall.sh
 DONE

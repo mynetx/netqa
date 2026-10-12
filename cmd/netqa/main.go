@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -42,12 +43,40 @@ func main() {
 		mustListProviders()
 	case "speedtest":
 		mustSpeedtest()
+	case "backup":
+		mustBackup()
 	case "version", "-v", "--version":
 		fmt.Println("netqa", version)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: netqa [serve|providers|version]\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: netqa [serve|providers|speedtest|backup [dir]|version]\n", cmd)
 		os.Exit(2)
 	}
+}
+
+// mustBackup writes a timestamped snapshot of the evidence database to the
+// directory given as the first argument (default: <data dir>/backups).
+func mustBackup() {
+	_, s := setup()
+	defer s.Close()
+	dir := filepath.Join(must(config.DataDir()), "backups")
+	if len(os.Args) > 2 {
+		dir = os.Args[2]
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fatal("backup: %v", err)
+	}
+	dst := filepath.Join(dir, "netqa-"+time.Now().Format("20060102-150405")+".db")
+	if err := s.Backup(dst); err != nil {
+		fatal("backup: %v", err)
+	}
+	fmt.Println(dst)
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		fatal("%v", err)
+	}
+	return v
 }
 
 func setup() (config.Config, *store.Store) {

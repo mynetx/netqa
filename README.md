@@ -52,16 +52,20 @@ go build -o /usr/local/bin/netqa ./cmd/netqa
 netqa serve            # collector + dashboard (http://127.0.0.1:8799)
 netqa providers        # list configured providers
 netqa speedtest        # run one speed test now and record it
+netqa backup [dir]     # write a consistent snapshot of the evidence DB
 ```
 
 Data + config live in `~/Library/Application Support/netqa/`
 (`netqa.db`, `config.yaml`).
 
-To run 24/7 without the installer, load the launchd agent yourself:
+Developer tasks (see `Makefile`):
 
 ```sh
-cp deploy/com.mynetx.netqa.plist ~/Library/LaunchAgents/
-launchctl load -w ~/Library/LaunchAgents/com.mynetx.netqa.plist   # unload to stop
+make check     # gofmt + vet + tests (what CI runs)
+make deploy    # rebuild ~/.local/bin/netqa and restart the running agent
+make status    # is the agent loaded / what does it see right now
+make logs      # follow ~/Library/Logs/netqa/netqa.err.log
+make backup    # consistent DB snapshot (DIR=/some/path to choose where)
 ```
 
 ## First-time setup
@@ -71,6 +75,8 @@ and its advertised speed:
 
 1. Enter a provider name (e.g. "My ISP") and the down/up target in Mbit, then Save.
 2. Under **Networks → provider**, assign your current network to that provider.
+   (Off VPN, an ISP no rule matches yet is registered automatically from its ASN,
+   with a notification asking you to set its target.)
 3. Data now accrues under it. Click the **Throughput** card any time to force a
    speed test; otherwise tests run automatically whenever the link is idle.
 4. When your plan changes (e.g. 40 → 20 Mbit), edit the target — the dashed chart

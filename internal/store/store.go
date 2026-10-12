@@ -36,6 +36,13 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// Backup writes a consistent, compacted copy of the database to path (which
+// must not exist) using VACUUM INTO, safe while the daemon keeps writing.
+func (s *Store) Backup(path string) error {
+	_, err := s.db.Exec(`VACUUM INTO ?`, path)
+	return err
+}
+
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
 
