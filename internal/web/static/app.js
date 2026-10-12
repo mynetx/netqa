@@ -598,6 +598,11 @@ async function init() {
 
   // Restore saved UI preferences.
   $("range").value = prefs.get("range", "24");
+  // Offer every IANA zone (e.g. the ISP's) rather than a hard-coded few.
+  const tzSel = $("tz");
+  (Intl.supportedValuesOf ? Intl.supportedValuesOf("timeZone") : []).forEach((z) => {
+    if (z !== "UTC") tzSel.add(new Option(z.replace(/_/g, " "), z));
+  });
   displayTZ = prefs.get("tz", "");
   if ([...$("tz").options].some((o) => o.value === displayTZ)) $("tz").value = displayTZ;
   else displayTZ = "";
