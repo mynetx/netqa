@@ -61,8 +61,8 @@ func TestMatchProviderMACBeatsAmbiguousASN(t *testing.T) {
 }
 
 // Backfill: networks recorded before any rule existed get assigned from their
-// stored MAC/ASN, while a network whose only signal is an ambiguous ASN stays
-// unassigned.
+// stored MAC/ASN, while a network whose only signal is an ASN claimed by two
+// providers stays unassigned.
 func TestReassignUnassignedBackfill(t *testing.T) {
 	s := newStore(t)
 	fiber, err := s.UpsertProvider(model.Provider{Name: "Fibernet", MatchMACs: "a1:b2:c3"})
@@ -74,6 +74,12 @@ func TestReassignUnassignedBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	for _, name := range []string{"Shared A", "Shared B"} {
+		if _, err := s.UpsertProvider(model.Provider{Name: name, MatchASN: "Shared Telecom"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	mustUpsert := func(n model.Network) {
 		if _, err := s.UpsertNetwork(n); err != nil {
 			t.Fatal(err)
@@ -81,8 +87,8 @@ func TestReassignUnassignedBackfill(t *testing.T) {
 	}
 	mustUpsert(model.Network{GatewayMAC: "a1:b2:c3:19:5:9", ISPASN: "AS65000 Example Telecom"})
 	mustUpsert(model.Network{GatewayMAC: "11:22:33:77:8a:3d", ISPASN: "AS65010 OtherISP Networks"})
-	// Blank MAC + a shared/ambiguous ASN that no rule claims -> must stay unassigned.
-	mustUpsert(model.Network{SSID: "blank", GatewayMAC: "", ISPASN: "AS65000 Example Telecom"})
+	// Blank MAC + an ASN two providers claim -> ambiguous, must stay unassigned.
+	mustUpsert(model.Network{SSID: "blank", GatewayMAC: "", ISPASN: "AS65020 Shared Telecom"})
 
 	n, err := ReassignUnassigned(s)
 	if err != nil {
@@ -103,5 +109,38 @@ func TestReassignUnassignedBackfill(t *testing.T) {
 	gotBlank, _ := s.NetworkByFingerprint("blank", "")
 	if gotBlank.ProviderID != nil {
 		t.Fatalf("ambiguous net must stay unassigned: %+v", gotBlank)
+	}
+}
+
+func TestProviderFromASN(t *testing.T) {
+	cases := []struct {
+		asn, wantName, wantRule string
+		wantOK                  bool
+	}{
+		{"AS64496 Example Satellite Networks", "Example Satellite Networks", "AS64496", true},
+		{"AS13335 Cloudflare, Inc.", "Cloudflare, Inc.", "AS13335", true},
+		{"as64496 Example Org", "Example Org", "AS64496", true},
+		{"", "", "", false},
+		{"garbage", "", "", false},
+		{"AS64496", "", "", false},
+		{"AS-WRONG Example", "", "", false},
+	}
+	for _, c := range cases {
+		name, rule, ok := providerFromASN(c.asn)
+		if ok != c.wantOK || name != c.wantName || rule != c.wantRule {
+			t.Fatalf("providerFromASN(%q)=(%q,%q,%v) want (%q,%q,%v)",
+				c.asn, name, rule, ok, c.wantName, c.wantRule, c.wantOK)
+		}
+		if !ok {
+			continue
+		}
+		// The generated rule must match its own source ASN, and only that AS number.
+		ps := []model.Provider{{ID: 1, MatchASN: rule}}
+		if id, hit := MatchProvider(ps, "", c.asn); !hit || id != 1 {
+			t.Fatalf("rule %q does not match its source %q", rule, c.asn)
+		}
+		if _, hit := MatchProvider(ps, "", rule+"0 Other Org"); hit {
+			t.Fatalf("rule %q prefix-matched a longer AS number", rule)
+		}
 	}
 }

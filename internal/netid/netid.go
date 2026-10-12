@@ -7,6 +7,7 @@ package netid
 import (
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +27,9 @@ type ASNFetcher interface {
 type Resolver struct {
 	Store   *store.Store
 	Fetcher ASNFetcher
+	// OnProviderCreated, if set, is called when an unmatched ASN registers a new
+	// provider (e.g. on arrival at a new ISP), so the user can set its target.
+	OnProviderCreated func(model.Provider)
 }
 
 // shouldLookupASN reports whether an ASN lookup is worthwhile and trustworthy:
@@ -58,13 +62,18 @@ func (r *Resolver) Resolve(ctx context.Context, snap env.Snapshot) (int64, error
 		}
 	}
 
-	// Auto-assign a provider for a not-yet-assigned network from its match rules.
-	// MAC-first matching keeps same-ASN links (e.g. an operator's fiber vs its LTE)
-	// apart; an existing manual assignment is left untouched.
+	// Auto-assign a provider for a not-yet-assigned network from its match rules
+	// (creating one for a new real ASN). An existing manual assignment is left
+	// untouched. Best-effort: a failure here must not stop the tick from logging.
 	if !alreadyAssigned {
-		if ps, err := r.Store.Providers(); err == nil {
-			if pid, ok := MatchProvider(ps, snap.GatewayMAC, asn); ok {
-				n.ProviderID = &pid
+		if ps, err := r.Store.Providers(); err != nil {
+			log.Printf("netid: providers: %v", err)
+		} else if pid, created, err := assignProvider(r.Store, &ps, snap.GatewayMAC, asn); err != nil {
+			log.Printf("netid: auto-create provider for %q: %v", asn, err)
+		} else if pid != 0 {
+			n.ProviderID = &pid
+			if created != nil && r.OnProviderCreated != nil {
+				r.OnProviderCreated(*created)
 			}
 		}
 	}

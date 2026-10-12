@@ -83,6 +83,11 @@ func mustServe() {
 	d := daemon.New(cfg, s, resolver)
 
 	if cfg.Alerts {
+		resolver.OnProviderCreated = func(p model.Provider) {
+			// Off the tick path: osascript can take seconds.
+			go notify.Notify("netqa: new provider detected",
+				fmt.Sprintf("%s (%s) was added automatically. Set its target Mbit in the dashboard.", p.Name, p.MatchASN))
+		}
 		d.OnOutageOpen = func(o model.Outage) {
 			_ = notify.Notify("netqa: internet outage", fmt.Sprintf("Confirmed %s outage started.", o.Class))
 		}

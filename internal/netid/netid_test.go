@@ -138,4 +138,76 @@ func TestResolveUnderVPNSkipsASN(t *testing.T) {
 	if got.ISPASN != "" {
 		t.Fatalf("VPN exit ASN leaked into network identity: %q", got.ISPASN)
 	}
+	if ps := mustProviders(t, s); len(ps) != 0 || got.ProviderID != nil {
+		t.Fatalf("VPN must never auto-create or assign a provider: %+v, %+v", ps, got)
+	}
+}
+
+// A brand-new network on a real (off-VPN) ASN that no provider claims registers
+// its own provider keyed on the AS number; a second network on the same ASN then
+// matches that provider instead of creating another.
+func TestResolveAutoCreatesProviderFromUnmatchedASN(t *testing.T) {
+	s := newStore(t)
+	r := &Resolver{Store: s, Fetcher: &fakeFetcher{asn: "AS64496 Example Satellite Networks"}}
+
+	for _, mac := range []string{"02:00:5e:10:00:01", "02:00:5e:10:00:02"} {
+		if _, err := r.Resolve(context.Background(), env.Snapshot{GatewayMAC: mac}); err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+	}
+
+	ps := mustProviders(t, s)
+	if len(ps) != 1 || ps[0].Name != "Example Satellite Networks" || ps[0].MatchASN != "AS64496" {
+		t.Fatalf("want exactly 1 auto-created provider, got %+v", ps)
+	}
+	for _, mac := range []string{"02:00:5e:10:00:01", "02:00:5e:10:00:02"} {
+		got, _ := s.NetworkByFingerprint("", mac)
+		if got == nil || got.ProviderID == nil || *got.ProviderID != ps[0].ID {
+			t.Fatalf("network %s not linked to auto-created provider: %+v", mac, got)
+		}
+	}
+}
+
+// An ASN matched by two providers is ambiguous: it must stay unassigned and must
+// not spawn a third provider (which would only deepen the ambiguity every tick).
+func TestResolveAmbiguousASNDoesNotAutoCreate(t *testing.T) {
+	s := newStore(t)
+	for _, name := range []string{"Fiber", "LTE"} {
+		if _, err := s.UpsertProvider(model.Provider{Name: name, MatchASN: "Example Telecom"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &Resolver{Store: s, Fetcher: &fakeFetcher{asn: "AS65000 Example Telecom"}}
+	if _, err := r.Resolve(context.Background(), env.Snapshot{GatewayMAC: "aa:bb:cc:dd:ee:ff"}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if ps := mustProviders(t, s); len(ps) != 2 {
+		t.Fatalf("ambiguous ASN must not create a provider, got %+v", ps)
+	}
+}
+
+// The backfill auto-creates too, once per ASN, for networks stored before.
+func TestReassignUnassignedAutoCreates(t *testing.T) {
+	s := newStore(t)
+	for _, mac := range []string{"11:11:11:11:11:11", "22:22:22:22:22:22"} {
+		if _, err := s.UpsertNetwork(model.Network{GatewayMAC: mac, ISPASN: "AS64500 Example ISP"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := ReassignUnassigned(s)
+	if err != nil || n != 2 {
+		t.Fatalf("ReassignUnassigned = %d, %v; want 2, nil", n, err)
+	}
+	if ps := mustProviders(t, s); len(ps) != 1 || ps[0].MatchASN != "AS64500" {
+		t.Fatalf("want 1 provider for the shared ASN, got %+v", ps)
+	}
+}
+
+func mustProviders(t *testing.T, s *store.Store) []model.Provider {
+	t.Helper()
+	ps, err := s.Providers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ps
 }
