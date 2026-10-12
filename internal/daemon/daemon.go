@@ -7,6 +7,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +58,13 @@ type Daemon struct {
 	// measuring is set while a throughput test saturates the link, so the prober
 	// does not misread the deliberate saturation as an ISP outage.
 	measuring atomic.Bool
+	// tpRun serialises speed tests: a forced and an automatic one must not
+	// overlap (they would share the link and clear each other's measuring flag).
+	tpRun sync.Mutex
+
+	// lastSeen is when manageOutage last observed the line. Only the tick
+	// goroutine touches it.
+	lastSeen time.Time
 
 	mu        sync.RWMutex
 	status    Status
@@ -67,6 +75,7 @@ type Daemon struct {
 var (
 	errNoNetwork = errors.New("no network identified yet")
 	errLinkBusy  = errors.New("link busy")
+	errTPRunning = errors.New("a speed test is already running")
 )
 
 // New builds a Daemon. The resolver's Fetcher should be a real HTTPASNFetcher in
@@ -161,6 +170,10 @@ func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, fl
 	if nid == 0 {
 		return 0, 0, errNoNetwork
 	}
+	if !d.tpRun.TryLock() {
+		return 0, 0, errTPRunning
+	}
+	defer d.tpRun.Unlock()
 	if !force {
 		if busy := throughput.LinkBusyMbit(ctx, iface, 800*time.Millisecond); busy > d.cfg.ThroughputIdleMbit {
 			return 0, 0, errLinkBusy
@@ -215,6 +228,7 @@ func (d *Daemon) tick(ctx context.Context) {
 	snap := env.Observe(tickCtx)
 	nid, err := d.resolver.Resolve(tickCtx, snap)
 	if err != nil {
+		log.Printf("daemon: resolve network: %v", err)
 		return // transient store/error; skip this tick rather than crash
 	}
 
@@ -226,9 +240,11 @@ func (d *Daemon) tick(ctx context.Context) {
 	internetUp := false
 	for _, target := range d.cfg.Targets {
 		ok, rtt := d.reachable(tickCtx, target)
-		_ = d.store.InsertSample(model.Sample{
+		if err := d.store.InsertSample(model.Sample{
 			NetworkID: nid, TS: now, Target: target, Success: ok, RTTms: msOf(rtt), VPN: snap.VPN,
-		})
+		}); err != nil {
+			log.Printf("daemon: insert sample: %v", err)
+		}
 		d.window.Add(prober.Result{TS: now, Target: target, Success: ok, RTT: rtt})
 		if ok {
 			internetUp = true
@@ -264,11 +280,27 @@ func (d *Daemon) tick(ctx context.Context) {
 
 // manageOutage opens/closes the persisted outage for the network. Only ISP and
 // upstream outages are recorded as evidence; local/asleep gaps are ignored.
+//
+// A gap in observation (sleep, shutdown, a restarted or wedged daemon) is never
+// evidence: an outage still open from before the gap is closed at the last
+// moment the line was actually observed, and re-opens now if it persists. This
+// keeps sleep and downtime out of outage durations without needing power events.
 func (d *Daemon) manageOutage(nid int64, now time.Time, vpn, isOut bool, class model.OutageClass) {
 	ongoing, err := d.store.OngoingOutage(nid)
 	if err != nil {
+		log.Printf("daemon: ongoing outage: %v", err)
 		return
 	}
+	if ongoing != nil {
+		if seen := d.lastObserved(nid, now); !seen.IsZero() && now.Sub(seen) > d.maxGap() {
+			if seen.Before(ongoing.Start) {
+				seen = ongoing.Start
+			}
+			d.closeOutage(ongoing, seen)
+			ongoing = nil
+		}
+	}
+	d.lastSeen = now
 	evidence := isOut && outage.CountsAgainstISP(class)
 
 	switch {
@@ -282,14 +314,37 @@ func (d *Daemon) manageOutage(nid int64, now time.Time, vpn, isOut bool, class m
 			}
 		}
 	case !evidence && ongoing != nil:
-		if err := d.store.CloseOutage(ongoing.ID, now); err == nil {
-			ongoing.End = now
-			if d.OnOutageClose != nil {
-				d.OnOutageClose(*ongoing)
-			}
-		}
+		d.closeOutage(ongoing, now)
 	}
 }
+
+func (d *Daemon) closeOutage(o *model.Outage, end time.Time) {
+	if err := d.store.CloseOutage(o.ID, end); err != nil {
+		log.Printf("daemon: close outage %d: %v", o.ID, err)
+		return
+	}
+	o.End = end
+	if d.OnOutageClose != nil {
+		d.OnOutageClose(*o)
+	}
+}
+
+// lastObserved is when the line was last observed before now: the previous tick
+// in this process, or — right after a (re)start — the newest stored sample.
+func (d *Daemon) lastObserved(nid int64, now time.Time) time.Time {
+	if !d.lastSeen.IsZero() {
+		return d.lastSeen
+	}
+	t, err := d.store.LastSampleBefore(nid, now)
+	if err != nil {
+		log.Printf("daemon: last sample: %v", err)
+	}
+	return t
+}
+
+// maxGap is the longest silence between observations that still counts as
+// continuous: a few missed ticks plus one tick's timeout.
+func (d *Daemon) maxGap() time.Duration { return 3*d.cfg.ProbeInterval + 15*time.Second }
 
 // captureTraceroute runs a traceroute in the background when an ISP outage opens
 // and stores it against the outage, so the evidence shows where the path breaks.

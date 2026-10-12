@@ -355,6 +355,18 @@ func (s *Store) SamplesBetween(networkID int64, from, to time.Time) ([]model.Sam
 	return out, rows.Err()
 }
 
+// LastSampleBefore returns the time of the newest sample for a network strictly
+// before t, or the zero time if there is none.
+func (s *Store) LastSampleBefore(networkID int64, t time.Time) (time.Time, error) {
+	var ts sql.NullInt64
+	err := s.db.QueryRow(`SELECT MAX(ts) FROM samples WHERE network_id=? AND ts < ?`,
+		networkID, toUnix(t)).Scan(&ts)
+	if err != nil || !ts.Valid {
+		return time.Time{}, err
+	}
+	return fromUnix(ts.Int64), nil
+}
+
 // --- Outages ---
 
 // OpenOutage creates a new ongoing outage and returns its id.
