@@ -41,7 +41,7 @@ func Observe(ctx context.Context) Snapshot {
 	netstatOut := run(ctx, "netstat", "-rn", "-f", "inet")
 	s.GatewayIP, s.Iface = parsePhysicalDefaultRoute(netstatOut)
 	if s.GatewayIP != "" {
-		s.GatewayMAC = parseGatewayMAC(run(ctx, "arp", "-n", s.GatewayIP))
+		s.GatewayMAC = gatewayKey(run(ctx, "arp", "-n", s.GatewayIP), s.GatewayIP)
 	}
 
 	// SSID is best-effort: empty on wired links and on modern macOS without

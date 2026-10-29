@@ -99,7 +99,7 @@ func mustServe() {
 	cfg, s := setup()
 	defer s.Close()
 
-	resolver := &netid.Resolver{Store: s, Fetcher: netid.HTTPASNFetcher{}}
+	resolver := &netid.Resolver{Store: s, Fetcher: netid.HTTPASNFetcher{}, LinkASN: netid.LinkASN}
 
 	// Apply provider match rules to networks recorded before the rules existed, so
 	// the dashboard shows correct links immediately on startup.
@@ -258,7 +258,7 @@ func mustSpeedtest() {
 	defer cancel()
 
 	snap := env.Observe(ctx)
-	resolver := &netid.Resolver{Store: s, Fetcher: netid.HTTPASNFetcher{}}
+	resolver := &netid.Resolver{Store: s, Fetcher: netid.HTTPASNFetcher{}, LinkASN: netid.LinkASN}
 	nid, err := resolver.Resolve(ctx, snap)
 	if err != nil {
 		fatal("resolve network: %v", err)

@@ -33,6 +33,15 @@ func TestParseGatewayMACIncomplete(t *testing.T) {
 	}
 }
 
+func TestGatewayKeyFallsBackToIP(t *testing.T) {
+	if got := gatewayKey(`192.168.178.1 (192.168.178.1) -- no entry`, "192.168.178.1"); got != "ip:192.168.178.1" {
+		t.Fatalf("hidden MAC: got %q", got)
+	}
+	if got := gatewayKey(`? (192.168.1.1) at a1:b2:c3:d4:e5:f6 on en0 ifscope [ethernet]`, "192.168.1.1"); got != "a1:b2:c3:d4:e5:f6" {
+		t.Fatalf("visible MAC: got %q", got)
+	}
+}
+
 func TestParsePhysicalDefaultRoute(t *testing.T) {
 	// `netstat -rn -f inet` while a VPN is up: the utun default must be ignored
 	// and the underlying physical (en0) gateway returned — this is what keeps

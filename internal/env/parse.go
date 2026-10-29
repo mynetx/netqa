@@ -30,6 +30,17 @@ func parseGatewayMAC(arpOut string) string {
 	return strings.ToLower(m[1])
 }
 
+// gatewayKey is the network identity key: the gateway MAC, or "ip:<gateway>"
+// when the OS hides it (macOS 27 masks every hardware address, so arp is empty).
+// shortcut: two routers on the same LAN IP (e.g. every FRITZ!Box on 192.168.178.1)
+// share a key; separate them by ASN if that ever mixes two providers.
+func gatewayKey(arpOut, gatewayIP string) string {
+	if mac := parseGatewayMAC(arpOut); mac != "" {
+		return mac
+	}
+	return "ip:" + gatewayIP
+}
+
 // parsePhysicalDefaultRoute scans `netstat -rn -f inet` and returns the gateway
 // IP and interface of the default route bound to a non-tunnel interface. This is
 // the real LAN gateway even when a VPN owns the primary default route, so it

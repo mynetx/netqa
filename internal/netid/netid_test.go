@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mynetx/netqa/internal/env"
 	"github.com/mynetx/netqa/internal/model"
@@ -210,4 +211,31 @@ func mustProviders(t *testing.T, s *store.Store) []model.Provider {
 		t.Fatal(err)
 	}
 	return ps
+}
+
+func TestResolveSeparatesHiddenMACNetworksByASN(t *testing.T) {
+	s := newStore(t)
+	asn := "AS64510 Example Fiber"
+	lookups := 0
+	r := &Resolver{Store: s, LinkASN: func(context.Context, string) (string, error) { lookups++; return asn, nil }}
+	snap := env.Snapshot{GatewayMAC: "ip:192.168.178.1", Iface: "en0", VPN: true}
+
+	gm, err := r.Resolve(context.Background(), snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Resolve(context.Background(), snap); err != nil || lookups != 1 {
+		t.Fatalf("second tick should reuse the cached key: lookups=%d err=%v", lookups, err)
+	}
+	n, _ := s.NetworkByFingerprint("", "ip:192.168.178.1 AS64510")
+	if n == nil || n.ID != gm || n.ISPASN != asn {
+		t.Fatalf("network = %+v, want id %d keyed on IP+ASN with ASN %q despite VPN", n, gm, asn)
+	}
+
+	// Same router IP behind another ISP (a FRITZ!Box at home) is a different network.
+	asn, r.hidAt = "AS64511 Example Telecom", time.Time{}
+	de, err := r.Resolve(context.Background(), snap)
+	if err != nil || de == gm {
+		t.Fatalf("same IP, other ASN must be a new network: got %d (gm %d) err=%v", de, gm, err)
+	}
 }
