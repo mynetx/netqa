@@ -132,6 +132,15 @@
   .pathtoggle{ background:none;border:1px solid var(--mut);color:var(--fg);border-radius:6px;
     font:inherit;font-size:11px;padding:1px 8px;cursor:pointer; }
   .pathtoggle:hover{ border-color:var(--fg); }
+  .summary { margin:0; padding-left:18px; line-height:1.8; }
+  .summary b { font-family:var(--mono); }
+  .strip { position:relative; height:14px; min-width:160px; border-radius:4px; background:var(--track); border:1px solid var(--line); }
+  .strip i { position:absolute; top:0; bottom:0; min-width:2px; background:var(--bad); }
+  .strip i.upstream { background:var(--warn); }
+  tr.day { cursor:pointer; }
+  tr.day td:first-child::before { content:"▸ "; color:var(--mut); }
+  tr.day[aria-expanded="true"] td:first-child::before { content:"▾ "; }
+  tr.dayitems td { background:var(--bg2); }
   pre.trace{ font-family:var(--mono);font-size:11.5px;line-height:1.45;margin:4px 0 8px;
     padding:10px;background:var(--codebg);border-radius:8px;overflow-x:auto;white-space:pre;color:var(--mut); }
 
@@ -232,13 +241,15 @@
     </div>
   </section>
 
+  <section class="panel" id="sumpanel"><h2>Summary · <span id="sumrange"></span></h2><ul id="summary" class="summary"></ul></section>
+
   <section class="panel"><h2>Latency (ms) &amp; outages</h2><canvas id="c_rtt" role="img" aria-label="Latency over the selected range, with ISP outages shaded"></canvas></section>
   <section class="panel"><h2>Packet loss (%)</h2><canvas id="c_loss" role="img" aria-label="Packet loss percentage over the selected range"></canvas></section>
   <section class="panel"><h2>Throughput (Mbit) vs target</h2><canvas id="c_tp" role="img" aria-label="Measured download throughput against the provider target"></canvas></section>
 
   <section class="panel">
-    <h2>Outages — ISP / upstream only (local &amp; sleep excluded) · <span id="outtz"></span></h2>
-    <div class="tablewrap"><table><thead><tr><th>Start</th><th>End</th><th>Duration</th><th>Class</th><th>Path</th></tr></thead>
+    <h2>Outages per day — ISP / upstream only (local &amp; sleep excluded) · <span id="outtz"></span></h2>
+    <div class="tablewrap"><table><thead><tr><th>Day</th><th>00 – 24h</th><th class="right">Outages</th><th class="right">Down</th><th class="right">Longest</th></tr></thead>
       <tbody id="outrows"></tbody></table></div>
   </section>
 

@@ -64,11 +64,17 @@ function focusNetworkID() {
   return ids[0] || 0;
 }
 
+let historySeq = 0;
 async function loadHistory() {
+  const seq = ++historySeq;
   const nid = focusNetworkID();
   if (!nid) { state.history = null; drawAll(); return; }
   const hours = $("range").value;
-  state.history = await getJSON(`/api/history?network=${nid}&hours=${hours}&buckets=160`);
+  const h = await getJSON(`/api/history?network=${nid}&hours=${hours}&buckets=160`);
+  // A newer load (e.g. after a range or provider change) owns the charts now;
+  // a slower stale response must not overwrite it.
+  if (seq !== historySeq) return;
+  state.history = h;
   state.history.networkID = nid;
   // The live network may have become known while this request was in flight.
   if (focusNetworkID() !== nid) return loadHistory();
@@ -319,6 +325,7 @@ function drawAll() {
   chart("c_tp", tpb, (p) => p.DownMbit, { color: css("--good"), bars: true, dots: true, target: tgt ? tgt.TargetDownMbit : 0 });
   updateThroughputStat(tps, tgt);
   renderOutages();
+  renderSummary();
   $("outtz").textContent = tzLabel();
 }
 
@@ -348,37 +355,130 @@ function outageEnd(o) {
   return d.getUTCFullYear() < 2000 ? null : d;
 }
 
+// zoned splits a time into its calendar day and time-of-day fraction in the
+// display zone, so outages group by the line's local day, not the viewer's.
+function zoned(d) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    ...tzOpt(), year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(d);
+  const g = (t) => Number((parts.find((p) => p.type === t) || {}).value);
+  const pad = (n) => String(n).padStart(2, "0");
+  return { day: `${g("year")}-${pad(g("month"))}-${pad(g("day"))}`, frac: (g("hour") * 3600 + g("minute") * 60 + g("second")) / 86400 };
+}
+
+const BLIP_SEC = 60; // drops shorter than this are counted per day, not listed
+
 function renderOutages() {
   const outs = (state.history && state.history.outages) ? state.history.outages : [];
   const trs = (state.history && state.history.traceroutes) ? state.history.traceroutes : [];
   const byOutage = {};
   trs.forEach((t) => { if (t.OutageID) (byOutage[t.OutageID] = byOutage[t.OutageID] || []).push(t); });
 
-  $("outrows").innerHTML = outs.length ? outs.slice().reverse().map((o) => {
+  const days = new Map(); // newest day first
+  outs.slice().reverse().forEach((o) => {
     const start = new Date(o.Start), end = outageEnd(o);
-    const dur = end ? human((end - start) / 1000) : human((Date.now() - start) / 1000) + " (ongoing)";
-    const paths = byOutage[o.ID] || [];
-    const pathCell = paths.length
-      ? `<button class="pathtoggle" data-outage="${o.ID}" aria-expanded="false" aria-controls="path_${o.ID}">path ▾</button>`
-      : `<span class="muted">—</span>`;
-    const detail = paths.length
-      ? `<tr class="pathrow" id="path_${o.ID}" hidden><td colspan="5"><pre class="trace">` +
-        paths.map((t) => `→ ${esc(t.Target)} @ ${esc(fmtTime(t.TS))}\n${esc(t.Raw)}`).join("\n\n") +
-        `</pre></td></tr>`
+    const sec = ((end || new Date()) - start) / 1000;
+    const z = zoned(start);
+    if (!days.has(z.day)) days.set(z.day, { label: start, items: [], total: 0, longest: 0 });
+    const d = days.get(z.day);
+    d.items.push({ o, start, end, sec, frac: z.frac });
+    d.total += sec; d.longest = Math.max(d.longest, sec);
+  });
+
+  const dayFmt = (d) => d.toLocaleDateString(undefined, { ...tzOpt(), weekday: "short", day: "numeric", month: "short" });
+  let i = 0;
+  $("outrows").innerHTML = days.size ? [...days.values()].map((d) => {
+    const id = "day_" + i++;
+    // shortcut: an outage crossing midnight is drawn only up to 24h on its start day.
+    const marks = d.items.map((it) =>
+      `<i class="${outageClass(it.o.Class)}" style="left:${(it.frac * 100).toFixed(2)}%;width:${(Math.min(it.sec / 86400, 1 - it.frac) * 100).toFixed(2)}%"></i>`).join("");
+    const long = d.items.filter((it) => it.sec >= BLIP_SEC);
+    const blips = d.items.filter((it) => it.sec < BLIP_SEC);
+    const rows = long.slice().reverse().map((it) => {
+      const paths = byOutage[it.o.ID] || [];
+      const oc = outageClass(it.o.Class);
+      const path = paths.length
+        ? ` <button class="pathtoggle" data-outage="${it.o.ID}" aria-expanded="false" aria-controls="path_${it.o.ID}">path ▾</button>` +
+          `<pre class="trace" id="path_${it.o.ID}" hidden>` +
+          paths.map((t) => `→ ${esc(t.Target)} @ ${esc(fmtTime(t.TS))}\n${esc(t.Raw)}`).join("\n\n") + `</pre>`
+        : "";
+      return `<li><span class="mono">${esc(fmtTime(it.start))} – ${it.end ? esc(fmtTime(it.end)) : "now"}</span> · <b>${human(it.sec)}</b>${it.end ? "" : " (ongoing)"} <span class="tag ${oc}">${oc}</span>${path}</li>`;
+    }).join("");
+    const blipLine = blips.length
+      ? `<li class="muted">${blips.length} short drop${blips.length > 1 ? "s" : ""} under 1 min (${human(blips.reduce((a, it) => a + it.sec, 0))} in total)</li>`
       : "";
-    const oc = outageClass(o.Class);
-    return `<tr><td>${esc(fmtDateTime(start))}</td><td>${end ? esc(fmtDateTime(end)) : "—"}</td>` +
-      `<td>${dur}</td><td><span class="tag ${oc}">${oc}</span></td><td>${pathCell}</td></tr>${detail}`;
+    return `<tr class="day" tabindex="0" aria-expanded="false" aria-controls="${id}"><td>${esc(dayFmt(d.label))}</td>` +
+      `<td><div class="strip" aria-hidden="true">${marks}</div></td><td class="right mono">${d.items.length}</td>` +
+      `<td class="right mono">${human(d.total)}</td><td class="right mono">${human(d.longest)}</td></tr>` +
+      `<tr class="dayitems" id="${id}" hidden><td colspan="5"><ul class="summary">${rows}${blipLine}</ul></td></tr>`;
   }).join("") : `<tr><td colspan="5" class="muted">No ISP outages in range. 🎉 (or your line behaved)</td></tr>`;
 
+  document.querySelectorAll("tr.day").forEach((r) => {
+    const toggle = () => {
+      const items = $(r.getAttribute("aria-controls"));
+      items.hidden = !items.hidden;
+      r.setAttribute("aria-expanded", String(!items.hidden));
+    };
+    r.onclick = toggle;
+    r.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+  });
   document.querySelectorAll(".pathtoggle").forEach((b) => {
     b.onclick = () => {
-      const row = $("path_" + b.dataset.outage);
-      if (!row) return;
-      row.hidden = !row.hidden;
-      b.setAttribute("aria-expanded", String(!row.hidden));
+      const pre = $("path_" + b.dataset.outage);
+      if (!pre) return;
+      pre.hidden = !pre.hidden;
+      b.setAttribute("aria-expanded", String(!pre.hidden));
     };
   });
+}
+
+const median = (xs) => {
+  if (!xs.length) return null;
+  const a = xs.slice().sort((x, y) => x - y), m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
+
+// renderSummary states the range's evidence in plain sentences: how often the
+// line was down while we were watching, and how fast it was against the target.
+function renderSummary() {
+  const h = state.history, ul = $("summary");
+  $("sumrange").textContent = $("range").selectedOptions[0].textContent;
+  if (!h) { ul.innerHTML = `<li class="muted">No data for this provider yet.</li>`; return; }
+  const items = [];
+  const pts = h.points || [];
+  const bucketSec = pts.length ? (new Date(h.to) - new Date(h.from)) / 1000 / pts.length : 0;
+  const watched = pts.filter((p) => p.samples).length * bucketSec;
+  const outs = (h.outages || []).map((o) => ((outageEnd(o) || new Date()) - new Date(o.Start)) / 1000);
+  const down = outs.reduce((a, x) => a + x, 0);
+  if (watched > 0) {
+    const avail = Math.max(0, 100 * (1 - down / watched));
+    items.push(`Online <b>${fmt(avail, 2)}%</b> of the <b>${human(watched)}</b> measured (sleep and local faults not counted).`);
+  }
+  if (outs.length) {
+    const long = outs.filter((x) => x >= 300).length;
+    items.push(`<b>${outs.length}</b> ISP outage${outs.length > 1 ? "s" : ""}, <b>${human(down)}</b> down in total; ` +
+      `<b>${long}</b> lasted 5 min or more, the longest <b>${human(Math.max(...outs))}</b>.`);
+  } else items.push("No ISP outages.");
+  const tps = h.throughput || [];
+  const tgt = selectedProviderTargets();
+  const target = tgt ? tgt.TargetDownMbit : 0;
+  if (tps.length) {
+    const md = median(tps.map((t) => t.DownMbit)), mu = median(tps.map((t) => t.UpMbit));
+    let line = `Speed tests: <b>${tps.length}</b>, median <b>${fmt(md)}</b> Mbit down / <b>${fmt(mu)}</b> up`;
+    if (target > 0) {
+      const ok = tps.filter((t) => t.DownMbit >= target).length;
+      line += ` — <b>${fmt((100 * md) / target, 0)}%</b> of the ${target} Mbit target; <b>${ok}</b> of ${tps.length} tests reached it`;
+    }
+    items.push(line + ".");
+    const hourOf = (t) => Math.floor(zoned(new Date(t.TS)).frac * 24);
+    const eve = tps.filter((t) => hourOf(t) >= 18).map((t) => t.DownMbit);
+    const night = tps.filter((t) => hourOf(t) < 7).map((t) => t.DownMbit);
+    if (eve.length >= 3 && night.length >= 3) {
+      items.push(`Evening (18–24h) median <b>${fmt(median(eve))}</b> Mbit vs night (0–7h) <b>${fmt(median(night))}</b> Mbit.`);
+    }
+  } else items.push("No speed tests in range.");
+  ul.innerHTML = items.map((x) => `<li>${x}</li>`).join("");
 }
 
 function human(sec) {
