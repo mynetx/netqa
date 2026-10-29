@@ -8,7 +8,7 @@ func TestParse(t *testing.T) {
  1  192.168.178.1  2.345 ms  2.100 ms  2.500 ms
  2  10.0.0.1  12.300 ms  11.900 ms  12.100 ms
  3  * * *
- 4  195.22.210.248  772.365 ms  75.900 ms  76.100 ms`
+ 4  203.0.113.9  772.365 ms  75.900 ms  76.100 ms`
 	hops := parse(raw)
 	if len(hops) != 4 {
 		t.Fatalf("got %d hops want 4: %+v", len(hops), hops)
@@ -20,7 +20,7 @@ func TestParse(t *testing.T) {
 		t.Errorf("unreachable hop = %+v want host=* rtt=0", hops[2])
 	}
 	// The 772ms first probe is a transient spike; min (75.9) is the baseline.
-	if hops[3].Host != "195.22.210.248" || hops[3].RTTms != 75.9 {
+	if hops[3].Host != "203.0.113.9" || hops[3].RTTms != 75.9 {
 		t.Errorf("hop4 = %+v want min RTT 75.9 (spike discarded)", hops[3])
 	}
 }

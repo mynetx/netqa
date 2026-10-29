@@ -1,5 +1,9 @@
 # netqa
 
+Logs your connection on macOS and proves when the ISP, not your setup, is to blame.
+
+![netqa dashboard with sample data](docs/screenshot.png)
+
 Connectivity-quality logger + local dashboard for macOS. Built to gather
 **defensible evidence** that a flaky ISP line (e.g. a shared fiber that drops
 pings and never reaches its advertised Mbit) needs to be fixed — without
@@ -18,12 +22,15 @@ false-accusing the ISP for self-inflicted gaps (Wi-Fi off, sleep, VPN).
   never counted against the ISP. Only **isp**/**upstream** gaps are evidence.
 - **Multi-provider**, VPN-proof identity. Networks are keyed by their local
   fingerprint (SSID + **gateway MAC**), read from the *physical* default route —
-  so a VPN to Germany never changes which provider the data belongs to. ASN
-  enrichment is fetched **only when no VPN is active**.
+  so a VPN to Germany never changes which provider the data belongs to. Where
+  macOS hides the router's MAC, the key is the gateway IP plus the link's ASN,
+  looked up through the physical interface so the VPN can't answer instead.
+  Other ASN enrichment is fetched **only when no VPN is active**.
 - **Dashboard** at `http://127.0.0.1:8799`: live status (SSE), latency/loss/
-  throughput charts with the target line, outage timeline, **per-provider
-  filter**, **presentation mode** (lock the view + export to one provider so a
-  screen-share/PDF for one provider never leaks another's data), and CSV export.
+  throughput charts with the target line, a plain-language summary, outages
+  per day, **per-provider filter**, **presentation mode** (lock the view +
+  export to one provider so a screen-share/PDF for one provider never leaks
+  another's data), and CSV export.
 - **Alerts**: macOS notification on confirmed outage + recovery only.
 
 ## Requirements

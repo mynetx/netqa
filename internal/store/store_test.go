@@ -275,7 +275,7 @@ func TestTraceroutesBetween(t *testing.T) {
 	oid, _ := s.OpenOutage(model.Outage{NetworkID: nid, Start: start, Class: model.OutageISP})
 
 	ts := start.Add(time.Second)
-	raw := " 1  192.168.178.1  2.5 ms\n 2  146.196.246.1  4.0 ms"
+	raw := " 1  192.168.178.1  2.5 ms\n 2  198.51.100.1  4.0 ms"
 	if err := s.InsertTraceroute(model.Traceroute{
 		OutageID: oid, NetworkID: nid, TS: ts, Target: "1.1.1.1", Raw: raw,
 	}); err != nil {
