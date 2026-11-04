@@ -40,7 +40,8 @@ cat > "$PLIST" <<PLISTEOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>ProcessType</key><string>Background</string>
+  <!-- Not Background: macOS then throttles the daemon's sockets and speed tests under-read on a busy line. -->
+  <key>ProcessType</key><string>Standard</string>
   <key>StandardOutPath</key><string>$LOGDIR/netqa.out.log</string>
   <key>StandardErrorPath</key><string>$LOGDIR/netqa.err.log</string>
 </dict>
