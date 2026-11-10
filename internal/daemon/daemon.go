@@ -83,7 +83,7 @@ var (
 // New builds a Daemon. The resolver's Fetcher should be a real HTTPASNFetcher in
 // production; tests may inject a fake.
 func New(cfg config.Config, s *store.Store, resolver *netid.Resolver) *Daemon {
-	return &Daemon{
+	d := &Daemon{
 		cfg:      cfg,
 		store:    s,
 		resolver: resolver,
@@ -91,6 +91,11 @@ func New(cfg config.Config, s *store.Store, resolver *netid.Resolver) *Daemon {
 		tcp:      prober.TCPPinger{Port: "443", Timeout: 2 * time.Second},
 		window:   prober.NewWindow(cfg.WindowSize),
 	}
+	// Carry the last speed test over a restart, so ThroughputMinGap still holds.
+	if s != nil {
+		d.lastTPRun, _ = s.LastThroughput()
+	}
+	return d
 }
 
 // Status returns the latest live status.
@@ -200,7 +205,7 @@ func (d *Daemon) measureThroughput(ctx context.Context, force bool) (float64, fl
 		return 0, 0, err
 	}
 	if err := d.store.InsertThroughput(model.Throughput{
-		NetworkID: nid, TS: time.Now(), DownMbit: res.DownMbit, UpMbit: res.UpMbit, VPN: vpn, Bytes: cost,
+		NetworkID: nid, TS: time.Now(), DownMbit: res.DownMbit, UpMbit: res.UpMbit, VPN: vpn, Bytes: res.Bytes,
 	}); err != nil {
 		return 0, 0, err
 	}

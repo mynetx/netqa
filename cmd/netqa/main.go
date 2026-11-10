@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -195,9 +196,9 @@ func watchdog(ctx context.Context, addr string) {
 				continue
 			}
 			fails++
-			fmt.Fprintf(os.Stderr, "watchdog: health probe failed (%d/%d)\n", fails, maxFailures)
+			log.Printf("watchdog: health probe failed (%d/%d)", fails, maxFailures) // log adds the timestamp
 			if fails >= maxFailures {
-				fmt.Fprintf(os.Stderr, "watchdog: daemon wedged, exiting for launchd restart\n")
+				log.Printf("watchdog: daemon wedged, exiting for launchd restart")
 				os.Exit(1)
 			}
 		}
@@ -272,7 +273,7 @@ func mustSpeedtest() {
 		fatal("measure: %v", err)
 	}
 	if err := s.InsertThroughput(model.Throughput{
-		NetworkID: nid, TS: time.Now(), DownMbit: res.DownMbit, UpMbit: res.UpMbit, VPN: snap.VPN,
+		NetworkID: nid, TS: time.Now(), DownMbit: res.DownMbit, UpMbit: res.UpMbit, VPN: snap.VPN, Bytes: res.Bytes,
 	}); err != nil {
 		fatal("store: %v", err)
 	}

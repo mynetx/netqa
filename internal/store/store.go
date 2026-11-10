@@ -494,6 +494,34 @@ func (s *Store) ThroughputBytesSince(t time.Time) (int64, error) {
 	return n, err
 }
 
+// LastThroughput returns when the newest speed test was recorded (zero if none).
+func (s *Store) LastThroughput() (time.Time, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(ts), 0) FROM throughput`).Scan(&n)
+	return fromUnix(n), err
+}
+
+// MoveRowsSince re-attributes everything recorded for network from since `since`
+// to network to. Traceroutes follow their outage.
+func (s *Store) MoveRowsSince(from, to int64, since time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`UPDATE samples SET network_id = ? WHERE network_id = ? AND ts >= ?`,
+		`UPDATE dns_results SET network_id = ? WHERE network_id = ? AND ts >= ?`,
+		`UPDATE throughput SET network_id = ? WHERE network_id = ? AND ts >= ?`,
+		`UPDATE outages SET network_id = ? WHERE network_id = ? AND start_ts >= ?`,
+	} {
+		if _, err := tx.Exec(q, to, from, toUnix(since)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ThroughputBetween returns throughput rows for a network in [from, to].
 func (s *Store) ThroughputBetween(networkID int64, from, to time.Time) ([]model.Throughput, error) {
 	rows, err := s.db.Query(

@@ -38,6 +38,11 @@ type Resolver struct {
 
 	hidGW, hidKey, hidASN string
 	hidAt                 time.Time
+
+	// bareKey/bareSince remember that rows are being logged under the bare
+	// "ip:<gateway>" key because the ASN lookup has not succeeded yet.
+	bareKey   string
+	bareSince time.Time
 }
 
 // hiddenKeyTTL is how long a hidden-MAC network key is trusted before the ASN is
@@ -63,6 +68,10 @@ func (r *Resolver) hiddenKey(ctx context.Context, snap env.Snapshot) (key, asn s
 	// fall back to the bare IP key until a lookup succeeds.
 	if snap.GatewayMAC == r.hidGW {
 		return r.hidKey, r.hidASN
+	}
+	if r.bareKey != snap.GatewayMAC || r.bareSince.IsZero() {
+		// Back-dated past one probe tick: its samples carry the tick's start time.
+		r.bareKey, r.bareSince = snap.GatewayMAC, now.Add(-15*time.Second)
 	}
 	return snap.GatewayMAC, ""
 }
@@ -119,7 +128,22 @@ func (r *Resolver) Resolve(ctx context.Context, snap env.Snapshot) (int64, error
 			}
 		}
 	}
-	return r.Store.UpsertNetwork(n)
+	id, err := r.Store.UpsertNetwork(n)
+	if err == nil && linkASN != "" && !r.bareSince.IsZero() {
+		// The lookup recovered (typically just after a daemon start on a bad
+		// line): what this run logged under the bare key belongs to this network.
+		if strings.HasPrefix(snap.GatewayMAC, r.bareKey+" ") {
+			if bare, berr := r.Store.NetworkByFingerprint(snap.SSID, r.bareKey); berr != nil {
+				log.Printf("netid: bare network: %v", berr)
+			} else if bare != nil && bare.ID != id {
+				if merr := r.Store.MoveRowsSince(bare.ID, id, r.bareSince); merr != nil {
+					log.Printf("netid: move rows from bare network: %v", merr)
+				}
+			}
+		}
+		r.bareSince = time.Time{}
+	}
+	return id, err
 }
 
 // HTTPASNFetcher resolves ASN/org via ipinfo.io (no API key for low volume).

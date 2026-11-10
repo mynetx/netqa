@@ -239,3 +239,43 @@ func TestResolveSeparatesHiddenMACNetworksByASN(t *testing.T) {
 		t.Fatalf("same IP, other ASN must be a new network: got %d (gm %d) err=%v", de, gm, err)
 	}
 }
+
+// A daemon that starts while the ASN lookup fails logs under the bare IP key.
+// Once the lookup recovers, this run's rows must move to the real network, while
+// older rows of the bare network (another place, another run) stay put.
+func TestResolveMovesBareKeyRowsOnceLookupRecovers(t *testing.T) {
+	s := newStore(t)
+	fail := true
+	r := &Resolver{Store: s, LinkASN: func(context.Context, string) (string, error) {
+		if fail {
+			return "", context.DeadlineExceeded
+		}
+		return "AS64510 Example Fiber", nil
+	}}
+	snap := env.Snapshot{GatewayMAC: "ip:192.168.178.1", Iface: "en0"}
+	ctx := context.Background()
+
+	bare, err := r.Resolve(ctx, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	for _, ts := range []time.Time{old, now} {
+		if err := s.InsertSample(model.Sample{NetworkID: bare, TS: ts, Target: "192.0.2.1", Success: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fail = false
+	real, err := r.Resolve(ctx, snap)
+	if err != nil || real == bare {
+		t.Fatalf("recovered lookup must resolve the IP+ASN network: got %d (bare %d) err=%v", real, bare, err)
+	}
+	from, to := old.Add(-time.Hour), now.Add(time.Hour)
+	moved, _ := s.SamplesBetween(real, from, to)
+	kept, _ := s.SamplesBetween(bare, from, to)
+	if len(moved) != 1 || len(kept) != 1 || kept[0].TS.After(now.Add(-time.Hour)) {
+		t.Fatalf("want this run's sample moved and the old one kept: moved=%d kept=%d", len(moved), len(kept))
+	}
+}
