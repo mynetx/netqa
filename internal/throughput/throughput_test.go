@@ -116,7 +116,7 @@ func TestMeasureDownloadRejected(t *testing.T) {
 		w.Write([]byte("x"))
 	}))
 	defer srv.Close()
-	rate, ok := download(context.Background(), srv.Client(), srv.URL+"/__down?bytes=", 8_000_000, 4)
+	rate, _, ok := download(context.Background(), srv.Client(), srv.URL+"/__down?bytes=", 8_000_000, 4)
 	if ok || rate != 0 {
 		t.Fatalf("rejected download must fail: rate=%v ok=%v", rate, ok)
 	}
@@ -163,6 +163,55 @@ func TestMeasureMultiStream(t *testing.T) {
 	}
 	if res.DownMbit <= 0 || res.UpMbit <= 0 {
 		t.Errorf("rates must be positive: down=%v up=%v", res.DownMbit, res.UpMbit)
+	}
+	if res.Bytes != 5_000_000 {
+		t.Errorf("Bytes = %d want 5000000", res.Bytes)
+	}
+}
+
+// TestMeasureCutsOffSlowLine proves a line far too slow for the payload is cut
+// off after Window and still rated on what got through, in both directions
+// (an unfinished upload used to be recorded as 0).
+func TestMeasureCutsOffSlowLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chunk := make([]byte, 8<<10)
+		// ~1.6 MB/s per stream in either direction.
+		for {
+			time.Sleep(5 * time.Millisecond)
+			if strings.Contains(r.URL.Path, "__down") {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+			} else if _, err := r.Body.Read(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	m := Measurer{
+		Client:    srv.Client(),
+		DownBytes: 64_000_000,
+		UpBytes:   64_000_000,
+		Streams:   4,
+		Window:    500 * time.Millisecond,
+		DownURL:   srv.URL + "/__down?bytes=",
+		UpURL:     srv.URL + "/__up",
+	}
+	start := time.Now()
+	res, err := m.Measure(context.Background())
+	if err != nil {
+		t.Fatalf("Measure: %v", err)
+	}
+	if el := time.Since(start); el > 3*time.Second {
+		t.Errorf("Measure took %v, want about 2x the 500ms window", el)
+	}
+	if res.DownMbit <= 0 || res.UpMbit <= 0 {
+		t.Errorf("partial transfers must be rated: down=%v up=%v", res.DownMbit, res.UpMbit)
+	}
+	if res.Bytes <= 0 || res.Bytes >= 128_000_000 {
+		t.Errorf("Bytes = %d, want the partial amount actually moved", res.Bytes)
 	}
 }
 

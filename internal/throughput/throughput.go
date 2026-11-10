@@ -8,7 +8,9 @@
 // high-latency or lossy path cannot make a fast line look slow. The payload is
 // sized to the advertised speed so every transfer runs for roughly the same
 // wall-clock duration regardless of plan, keeping TCP slow-start a small,
-// constant fraction of the measurement.
+// constant fraction of the measurement. A transfer is cut off after that
+// duration and rated on what got through, so a line far below its plan is not
+// saturated for minutes.
 package throughput
 
 import (
@@ -29,6 +31,7 @@ import (
 type Result struct {
 	DownMbit float64
 	UpMbit   float64
+	Bytes    int64 // payload actually transferred, both directions
 }
 
 // parseInterfaceBytes extracts (inBytes, outBytes) from `netstat -ib -I <iface>`
@@ -105,9 +108,10 @@ const (
 	downURL = "https://speed.cloudflare.com/__down?bytes="
 	upURL   = "https://speed.cloudflare.com/__up"
 
-	// measureSecs is the target wall-clock duration of a transfer. Sizing the
-	// payload to the advertised speed keeps slow-start a small fraction of the
-	// run at any plan, so the measured rate reflects steady-state throughput.
+	// measureSecs is the target wall-clock duration of a transfer, and its hard
+	// cap. Sizing the payload to the advertised speed keeps slow-start a small
+	// fraction of the run at any plan, so the measured rate reflects steady-state
+	// throughput.
 	measureSecs = 10
 
 	defaultStreams = 4
@@ -198,6 +202,8 @@ type Measurer struct {
 	DownBytes int
 	UpBytes   int
 	Streams   int
+	// Window caps each direction's transfer time (0 = measureSecs).
+	Window time.Duration
 
 	// DownURL/UpURL override the Cloudflare endpoints (used by tests). DownURL
 	// must end with the "bytes=" query so a size can be appended.
@@ -206,7 +212,8 @@ type Measurer struct {
 }
 
 // Measure downloads then uploads the configured payload across parallel streams
-// and returns the rates. It errors only when the download fails entirely; an
+// and returns the rates. Each direction stops after Window and is rated on the
+// bytes that got through. It errors only when the download fails entirely; an
 // upload failure still yields the download result.
 func (m Measurer) Measure(ctx context.Context) (Result, error) {
 	c := m.Client
@@ -234,13 +241,20 @@ func (m Measurer) Measure(ctx context.Context) (Result, error) {
 		uURL = upURL
 	}
 
+	window := m.Window
+	if window <= 0 {
+		window = measureSecs * time.Second
+	}
+
 	var res Result
-	down, ok := download(ctx, c, dURL, downBytes, streams)
+	dctx, cancel := context.WithTimeout(ctx, window)
+	down, dn, ok := download(dctx, c, dURL, downBytes, streams)
+	cancel()
 	if !ok {
 		return res, errDownloadFailed
 	}
-	res.DownMbit = down
-	res.UpMbit = upload(ctx, c, uURL, upBytes, streams)
+	up, un := upload(ctx, c, uURL, upBytes, streams, window)
+	res.DownMbit, res.UpMbit, res.Bytes = down, up, int64(dn+un)
 	return res, nil
 }
 
@@ -251,11 +265,12 @@ func (m Measurer) Measure(ctx context.Context) (Result, error) {
 // untimed, variable chunk of each payload, decoupling bytes from time and
 // collapsing the rate on a high-latency link.) The payload is sized to ~10s of
 // transfer, so the handshake/TTFB now inside the window is negligible. The
-// combined streams still fill a high-latency pipe a single connection cannot. ok
-// is false when no stream established a body (e.g. a real outage).
-func download(ctx context.Context, c *http.Client, url string, total, streams int) (float64, bool) {
+// combined streams still fill a high-latency pipe a single connection cannot. A
+// ctx that expires mid-transfer still yields the rate of the bytes read so far.
+// ok is false when no stream established a body (e.g. a real outage).
+func download(ctx context.Context, c *http.Client, url string, total, streams int) (rate float64, n uint64, ok bool) {
 	var sum atomic.Uint64
-	var ok atomic.Bool
+	var got atomic.Bool
 	var wg sync.WaitGroup
 	start := time.Now()
 	for _, p := range splitBytes(total, streamsFor(total, streams)) {
@@ -276,24 +291,50 @@ func download(ctx context.Context, c *http.Client, url string, total, streams in
 			if resp.StatusCode != http.StatusOK {
 				return
 			}
-			ok.Store(true)
+			got.Store(true)
 			m, _ := io.Copy(io.Discard, resp.Body)
 			sum.Add(uint64(m))
 		}(p)
 	}
 	wg.Wait()
-	if !ok.Load() {
-		return 0, false
+	if !got.Load() {
+		return 0, 0, false
 	}
-	return mbit(sum.Load(), time.Since(start)), true
+	return mbit(sum.Load(), time.Since(start)), sum.Load(), true
 }
 
-// upload runs `streams` parallel POSTs totalling `total` random bytes and returns
-// the aggregate rate. Best-effort: failed streams simply contribute no bytes. The
-// handshake cannot be excluded here (the body must be sent as the request runs),
-// but multi-stream still avoids a single connection's window limit.
-func upload(ctx context.Context, c *http.Client, url string, total, streams int) float64 {
-	var sum atomic.Uint64
+// countingReader counts the bytes the HTTP transport takes from an upload body.
+type countingReader struct {
+	r io.Reader
+	n *atomic.Uint64
+}
+
+func (c countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(uint64(n))
+	return n, err
+}
+
+// upload runs `streams` parallel POSTs totalling `total` random bytes for at
+// most window and returns the aggregate rate and the bytes sent. Best-effort:
+// failed streams simply contribute no bytes. The handshake cannot be excluded
+// here (the body must be sent as the request runs), but multi-stream still
+// avoids a single connection's window limit.
+//
+// When every stream finishes in time the rate is exact: completed bytes over
+// elapsed time. When the window cuts the upload off, no server has confirmed
+// anything, so the rate is what the transport took from the bodies after a
+// warm-up. The warm-up excludes the initial burst that only fills the socket
+// buffers; after it the transport takes bytes only as fast as the line drains.
+// shortcut: reads too low if the whole payload fits in the socket buffers
+// (tiny plan, line far below it), count acked bytes via TCP info if that matters.
+func upload(ctx context.Context, c *http.Client, url string, total, streams int, window time.Duration) (float64, uint64) {
+	ctx, cancel := context.WithTimeout(ctx, window)
+	defer cancel()
+	var done, sent, warm atomic.Uint64
+	warmup := window / 5
+	t := time.AfterFunc(warmup, func() { warm.Store(sent.Load()) })
+	defer t.Stop()
 	var wg sync.WaitGroup
 	start := time.Now()
 	for _, p := range splitBytes(total, streamsFor(total, streams)) {
@@ -303,7 +344,7 @@ func upload(ctx context.Context, c *http.Client, url string, total, streams int)
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			body := io.LimitReader(rand.Reader, int64(n))
+			body := countingReader{io.LimitReader(rand.Reader, int64(n)), &sent}
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 			req.ContentLength = int64(n)
 			resp, err := c.Do(req)
@@ -312,9 +353,12 @@ func upload(ctx context.Context, c *http.Client, url string, total, streams int)
 			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
-			sum.Add(uint64(n))
+			done.Add(uint64(n))
 		}(p)
 	}
 	wg.Wait()
-	return mbit(sum.Load(), time.Since(start))
+	if ctx.Err() == nil {
+		return mbit(done.Load(), time.Since(start)), done.Load()
+	}
+	return mbit(saturatingSub(sent.Load(), warm.Load()), window-warmup), sent.Load()
 }
