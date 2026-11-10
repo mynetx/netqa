@@ -99,6 +99,22 @@ function startStream() {
   getJSON("/api/status").then(applyStatus).catch(() => {});
 }
 
+// followLiveProvider selects the provider of the network we are connected to
+// right now, so the target and charts match the current line without a manual
+// pick. The saved choice is left alone; it still applies while the live network
+// has no provider. Reports whether it switched.
+// shortcut: a network first seen after page load is unknown here until reload.
+function followLiveProvider() {
+  const n = state.networks.find((n) => n.ID === state.liveNetworkID);
+  const pid = n && n.ProviderID ? String(n.ProviderID) : "";
+  if (!pid || pid === state.selectedProvider) return false;
+  $("provider").value = pid;
+  state.selectedProvider = pid;
+  fillProviderForm();
+  refreshHistory();
+  return true;
+}
+
 function applyStatus(s) {
   // Ignore the zero-value status emitted before the first probe tick completes,
   // so the UI never flashes a false "Offline".
@@ -110,7 +126,8 @@ function applyStatus(s) {
   state.liveNetworkID = s.network_id || 0;
   // The live network can arrive after (or change since) the last chart load;
   // refocus the charts on it right away instead of waiting for the next poll.
-  if (state.liveNetworkID !== prevLive && state.history && focusNetworkID() !== state.history.networkID) {
+  if (state.liveNetworkID !== prevLive && !followLiveProvider() &&
+      state.history && focusNetworkID() !== state.history.networkID) {
     refreshHistory();
   }
   const online = s.online;
