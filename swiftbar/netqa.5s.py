@@ -79,7 +79,8 @@ def main():
     try:
         down = up = None
         if nid:
-            hist = get(f"/api/history?network={nid}&hours=720&buckets=1")
+            # buckets=0: only speed tests needed; points cost a 30-day sample scan every 5 s
+            hist = get(f"/api/history?network={nid}&hours=720&buckets=0")
             tps = hist.get("throughput") or []
             if tps:
                 down, up = tps[-1].get("DownMbit"), tps[-1].get("UpMbit")

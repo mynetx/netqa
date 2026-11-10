@@ -1,11 +1,13 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mynetx/netqa/internal/daemon"
 	"github.com/mynetx/netqa/internal/model"
@@ -87,6 +89,37 @@ func TestLocalOnlyGuards(t *testing.T) {
 		srv.Handler().ServeHTTP(rec, req)
 		if rec.Code != c.want {
 			t.Errorf("%s: %s %s = %d want %d", c.name, c.method, c.url, rec.Code, c.want)
+		}
+	}
+}
+
+// buckets=0 is how the menu bar plugin asks for speed tests only: it must return
+// no points (and so skip the sample scan), while buckets=1 still aggregates.
+func TestHistoryBucketsZeroSkipsPoints(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "n.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	nid, err := st.UpsertNetwork(model.Network{GatewayMAC: "a1:b2:c3:77:8a:3d"})
+	if err != nil {
+		t.Fatalf("seed network: %v", err)
+	}
+	if err := st.InsertSample(model.Sample{NetworkID: nid, TS: time.Now().Add(-time.Minute), Target: "192.0.2.1", Success: true, RTTms: 5}); err != nil {
+		t.Fatalf("seed sample: %v", err)
+	}
+	srv := New(st, func() daemon.Status { return daemon.Status{} }, nil)
+
+	for buckets, want := range map[string]int{"0": 0, "1": 1} {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/api/history?network=1&hours=720&buckets="+buckets, nil)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		var got historyResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("buckets=%s: status %d, bad JSON: %v", buckets, rec.Code, err)
+		}
+		if len(got.Points) != want {
+			t.Errorf("buckets=%s: %d points, want %d", buckets, len(got.Points), want)
 		}
 	}
 }

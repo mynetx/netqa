@@ -253,10 +253,14 @@ type historyResponse struct {
 }
 
 // handleHistory: GET /api/history?network=<id>&hours=<n>&buckets=<n>
+// buckets=0 returns outages, speed tests and traceroutes without points.
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	nid, _ := strconv.ParseInt(r.URL.Query().Get("network"), 10, 64)
 	hours := atoiDefault(r.URL.Query().Get("hours"), 24)
 	buckets := atoiDefault(r.URL.Query().Get("buckets"), 120)
+	if r.URL.Query().Get("buckets") == "0" {
+		buckets = 0 // no points wanted: skips the scan over every sample in the range
+	}
 
 	to := time.Now()
 	from := to.Add(-time.Duration(hours) * time.Hour)
